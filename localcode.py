@@ -944,13 +944,13 @@ class LocalCode:
                     prompt_tokens = self.last_usage.get("prompt_tokens", 0)
                     completion_tokens = self.last_usage.get("completion_tokens", 0)
                     if self._tokens_estimated:
-                        # Replace estimated total with actual API total
-                        self.total_tokens = prompt_tokens + completion_tokens
+                        # Replace estimated total with actual API prompt tokens
+                        self.total_tokens = prompt_tokens
                     else:
-                        self.total_tokens += prompt_tokens + completion_tokens
+                        self.total_tokens += prompt_tokens
                     self._tokens_estimated = False  # Reset when we get real API data
                 spinner.stop()
-                print(f"{styled(' local ', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} {styled('✓', '32m')} {styled(f'tokens: {self.total_tokens:,}', '90m')}\n")
+                print(f"{styled(' local ', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} {styled('✓', '32m')} {styled(f'input tokens: {self.total_tokens:,}', '90m')}\n")
                 return body
         except urllib.error.HTTPError as e:
             spinner.stop()
@@ -1516,7 +1516,7 @@ class LocalCode:
                 styled("tokens:", "2;90m")
                 + styled(f" {prompt_tokens:,}↑ {completion_tokens:,}↓", "90m")
                 + styled(" • ", "2;90m")
-                + styled(f"total: ~{self.total_tokens:,}" + (" [est]" if self._tokens_estimated else ""), "90m")
+                + styled(f"input: {self.total_tokens:,}" + (" [est]" if self._tokens_estimated else ""), "90m")
                 + styled(" • ", "2;90m")
                 + styled(f"msgs: {len(self.messages)}", "2;90m")
             )
