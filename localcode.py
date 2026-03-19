@@ -13,6 +13,7 @@ import platform
 import re
 import shutil
 import socket
+import socketserver
 import stat
 import subprocess
 import sys
@@ -309,6 +310,52 @@ def format_tool_call_display(name: str, args: Dict[str, Any]) -> str:
 
     # Default: show minimal JSON for unknown tools
     return json.dumps(args, ensure_ascii=False)[:200]
+
+def format_python_code(content: str, indent_size: int = 4) -> str:
+    """Minimal Python code formatter.
+    
+    Handles common issues: trailing whitespace, inconsistent indentation,
+    extra blank lines, missing file ending newline.
+    
+    Args:
+        content: Python source code to format.
+        indent_size: Number of spaces per indentation level (default 4).
+        
+    Returns:
+        Formatted Python source code.
+    """
+    lines = content.split('\n')
+    formatted: List[str] = []
+    prev_was_blank = False
+    
+    for line in lines:
+        # Strip trailing whitespace
+        line = line.rstrip()
+        
+        # Convert tabs to spaces (if needed)
+        line = line.expandtabs(indent_size)
+        
+        # Skip consecutive blank lines (keep at most one)
+        is_blank = len(line.strip()) == 0
+        if is_blank:
+            if not prev_was_blank and formatted:
+                formatted.append('')
+            prev_was_blank = True
+            continue
+        
+        prev_was_blank = False
+        formatted.append(line)
+    
+    # Ensure single trailing newline
+    result = '\n'.join(formatted)
+    if not result.endswith('\n'):
+        result += '\n'
+    
+    # Remove multiple trailing newlines
+    result = result.rstrip('\n') + '\n'
+    
+    return result
+
 
 def truncate(lines: List[str], n: int = 500, max_line_len: int = MAX_LINE_LENGTH) -> List[str]:
     """Truncate list of lines to fit within specified limits.
@@ -1282,6 +1329,14 @@ class LocalCode:
 
     def tool_commit_changes(self, args: Dict[str, Any]) -> Dict[str, Any]:
         message = args["message"].strip()
+
+        # Format modified Python files before committing
+        formatted_files = self._format_modified_python_files()
+        if formatted_files:
+            print(styled(f"Formatted {len(formatted_files)} Python file(s):", "33m"))
+            for f in formatted_files:
+                print(f"  - {f}")
+
         result = _do_git_commit(self.repo_root, message)
 
         # Automatically compress after successful commit (unit of work is complete)
@@ -1289,6 +1344,49 @@ class LocalCode:
             self.cmd_compress()
 
         return result
+
+    def _format_modified_python_files(self) -> List[str]:
+        """Format all modified Python files in the repo.
+
+        Returns:
+            List of formatted file paths.
+        """
+        formatted: List[str] = []
+
+        # Get list of modified Python files
+        try:
+            result = subprocess.run(
+                ["git", "-C", self.repo_root, "diff", "--name-only", "--diff-filter=AM", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=GIT_COMMAND_TIMEOUT,
+            )
+            if result.returncode != 0:
+                return formatted
+
+            modified_files = result.stdout.strip().split('\n')
+        except (subprocess.TimeoutExpired, Exception):
+            return formatted
+
+        for rel_path in modified_files:
+            if not rel_path.endswith('.py'):
+                continue
+
+            try:
+                full_path = Path(self.repo_root) / rel_path
+                if not full_path.exists():
+                    continue
+
+                content = full_path.read_text(encoding='utf-8')
+                formatted_content = format_python_code(content)
+
+                if formatted_content != content:
+                    full_path.write_text(formatted_content, encoding='utf-8')
+                    formatted.append(rel_path)
+            except Exception:
+                continue
+
+        return formatted
 
     def tool_browser_execute(self, args: Dict[str, Any]) -> Dict[str, Any]:
         code = args.get("code", "").strip()
