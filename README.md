@@ -2,9 +2,7 @@
 
 Your AI pair programmer that never leaves your machine.
 
-<!-- GIF PLACEHOLDER: Replace this with a terminal GIF showing localcode in action -->
-<!-- Recommended specs: ~1200x600px, 5-8 second loop, <3MB, dark terminal theme -->
-<!-- <img src="demo.gif" alt="localcode demo" style="max-width: 100%;"> -->
+![localcode demo](demo.gif)
 
 ## What Is It?
 
