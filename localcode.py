@@ -810,7 +810,7 @@ class Spinner:
                 rgb_val = int(100 + wave * 155)
                 color_code = f"\033[1m\033[38;2;{rgb_val};{rgb_val};255m"
                 reset_code = "\033[0m"
-                print(f"\r{styled(' local ', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} {color_code}{chars[i % len(chars)]}{reset_code} ", end="", flush=True)
+                print(f"\r{styled('local', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} {color_code}{chars[i % len(chars)]}{reset_code} ", end="", flush=True)
                 i += 1
                 time.sleep(0.08)
 
@@ -1000,7 +1000,7 @@ class LocalCode:
                         self.total_tokens += prompt_tokens
                     self._tokens_estimated = False  # Reset when we get real API data
                 spinner.stop()
-                print(f"{styled(' local ', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} {styled('✓', '32m')} {styled(f'input tokens: {self.total_tokens:,}', '90m')}\n")
+                print(f"{styled('local', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} {styled('✓', '32m')} {styled(f'input tokens: {prompt_tokens:,}', '90m')}\n")
                 return body
         except urllib.error.HTTPError as e:
             spinner.stop()
@@ -1283,7 +1283,7 @@ class LocalCode:
         if not code:
             return {"ok": False, "error": "empty code"}
 
-        print(f"{styled(' local ', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} wants to execute in browser:")
+        print(f"{styled('local', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} wants to execute in browser:")
         print(f"  {styled(code, '48;5;236;37m')}")
         title(f"⏳ {APP_NAME} (browser)")
 
@@ -1373,7 +1373,7 @@ class LocalCode:
                 # Format tool call display in a user-friendly way
                 display_args = format_tool_call_display(name, args)
                 print(
-                    f"{styled(' local ', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} "
+                    f"{styled('local', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')}"
                     f"{styled(name, '1;36m')} "
                     f"{styled(display_args, '90m')}"
                 )
@@ -1543,7 +1543,7 @@ class LocalCode:
 
     def repl(self) -> None:
         print(
-            f"{styled(' local ', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')}"
+            f"{styled('local', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')}"
             f" {styled(' ' + MODEL + ' ', '48;5;236;37m')}"
             f" {styled(' ' + LLAMA_HOST + ' ', '48;5;236;90m')}"
             f" {styled(' ctrl+d to send ', '48;5;236;37m')}"
@@ -1565,7 +1565,7 @@ class LocalCode:
 
             # Status line for local models (no cost, just tokens)
             print(
-                styled(f"input: {self.total_tokens:,}" + (" [est]" if self._tokens_estimated else ""), "90m")
+                styled(f"input: {prompt_tokens:,}" + (" [est]" if self._tokens_estimated else ""), "90m")
                 + styled(" • ", "2;90m")
                 + styled(f"msgs: {len(self.messages)}", "2;90m")
             )
