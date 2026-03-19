@@ -895,7 +895,7 @@ class LocalCode:
         thread.start()
         time.sleep(0.5)  # allow startup
 
-    def llama_request(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
+    def llama_request(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, enable_thinking: bool = False) -> Optional[Dict[str, Any]]:
         """Send a chat completion request to llama.cpp server."""
         # Convert tools to OpenAI format expected by llama.cpp
         openai_tools = None
@@ -923,6 +923,12 @@ class LocalCode:
         if openai_tools:
             payload["tools"] = openai_tools
             payload["tool_choice"] = "auto"
+        
+        # Add chat_template_kwargs for thinking mode if enabled
+        if enable_thinking is not None:
+            payload["chat_template_kwargs"] = {
+                "enable_thinking": enable_thinking,
+            }
 
         req = urllib.request.Request(
             f"{LLAMA_HOST}/v1/chat/completions",
@@ -1266,11 +1272,18 @@ class LocalCode:
         return {"ok": False, "error": f"unknown tool: {name}"}
 
     def run_agent_turn(self, request: str) -> None:
+        # Detect if user wants thinking mode enabled
+        enable_thinking = "#think" in request.lower()
+        
+        # Strip #think from the request before processing
+        if enable_thinking:
+            request = re.sub(r'#think', '', request, flags=re.IGNORECASE).strip()
+        
         # Add user message to conversation history
         user_content = self.build_user_message(request)
         self.messages.append({"role": "user", "content": user_content})
 
-        response = self.llama_request(self.get_messages_with_system(), TOOLS)
+        response = self.llama_request(self.get_messages_with_system(), TOOLS, enable_thinking=enable_thinking)
         if not response:
             return
 
@@ -1334,7 +1347,7 @@ class LocalCode:
                 })
 
             # Continue conversation with tool results
-            response = self.llama_request(self.get_messages_with_system(), TOOLS)
+            response = self.llama_request(self.get_messages_with_system(), TOOLS, enable_thinking=enable_thinking)
             if not response:
                 return
 
