@@ -922,7 +922,7 @@ class LocalCode:
         
         # Add reasoning_format for thinking mode (llama.cpp API)
         if enable_thinking:
-            print(f"DEBUG: enable_thinking=True, setting reasoning_format=auto")
+ 
             payload["reasoning_format"] = "auto"
         if openai_tools:
             payload["tools"] = openai_tools
@@ -1315,7 +1315,7 @@ class LocalCode:
                 self.messages.append(assistant_msg)
 
             # Print reasoning content first if present (thinking output)
-            if reasoning:
+            if reasoning and reasoning.strip():
                 print(styled("Thinking:", "36m"))
                 print(styled(reasoning, "90m"))
                 print()
@@ -1684,7 +1684,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 _bridge_pending_time = 0.0
 
             elif self.path.startswith('/result'):
-                print(f"DEBUG: /result received data: {data}")
+     
                 _bridge_result = data
                 _bridge_pending = None
                 _bridge_pending_time = 0.0
