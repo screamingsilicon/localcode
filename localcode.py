@@ -1513,10 +1513,7 @@ class LocalCode:
 
             # Status line for local models (no cost, just tokens)
             print(
-                styled("tokens:", "2;90m")
-                + styled(f" {prompt_tokens:,}↑ {completion_tokens:,}↓", "90m")
-                + styled(" • ", "2;90m")
-                + styled(f"input: {self.total_tokens:,}" + (" [est]" if self._tokens_estimated else ""), "90m")
+                styled(f"input: {self.total_tokens:,}" + (" [est]" if self._tokens_estimated else ""), "90m")
                 + styled(" • ", "2;90m")
                 + styled(f"msgs: {len(self.messages)}", "2;90m")
             )
