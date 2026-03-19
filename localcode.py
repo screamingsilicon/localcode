@@ -895,7 +895,7 @@ class LocalCode:
         thread.start()
         time.sleep(0.5)  # allow startup
 
-    def llama_request(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, enable_thinking: bool = False) -> Optional[Dict[str, Any]]:
+    def llama_request(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
         """Send a chat completion request to llama.cpp server."""
         # Convert tools to OpenAI format expected by llama.cpp
         openai_tools = None
@@ -920,10 +920,7 @@ class LocalCode:
             "stream": False,
         }
         
-        # Add reasoning_format for thinking mode (llama.cpp API)
-        if enable_thinking:
  
-            payload["reasoning_format"] = "auto"
         if openai_tools:
             payload["tools"] = openai_tools
             payload["tool_choice"] = "auto"
@@ -1022,14 +1019,6 @@ class LocalCode:
             return ""
         message = choices[0].get("message", {})
         return message.get("content", "") or ""
-
-    def extract_reasoning_content(self, response: Dict[str, Any]) -> str:
-        """Extract reasoning_content from OpenAI-compatible response."""
-        choices = response.get("choices", [])
-        if not choices:
-            return ""
-        message = choices[0].get("message", {})
-        return message.get("reasoning_content", "") or ""
 
     def extract_tool_calls(self, response: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract tool calls from OpenAI-compatible response."""
@@ -1278,18 +1267,11 @@ class LocalCode:
         return {"ok": False, "error": f"unknown tool: {name}"}
 
     def run_agent_turn(self, request: str) -> None:
-        # Detect if user wants thinking mode enabled
-        enable_thinking = "#think" in request.lower()
-        
-        # Strip #think from the request before processing
-        if enable_thinking:
-            request = re.sub(r'#think', '', request, flags=re.IGNORECASE).strip()
-        
         # Add user message to conversation history
         user_content = self.build_user_message(request)
         self.messages.append({"role": "user", "content": user_content})
 
-        response = self.llama_request(self.get_messages_with_system(), TOOLS, enable_thinking=enable_thinking)
+        response = self.llama_request(self.get_messages_with_system(), TOOLS)
         if not response:
             return
 
@@ -1301,7 +1283,6 @@ class LocalCode:
                 return
 
             text = self.extract_text(response)
-            reasoning = self.extract_reasoning_content(response)
             tool_calls = self.extract_tool_calls(response)
             finish_reason = self.get_finish_reason(response)
 
@@ -1313,12 +1294,6 @@ class LocalCode:
                 assistant_msg["tool_calls"] = tool_calls
             if text or tool_calls:
                 self.messages.append(assistant_msg)
-
-            # Print reasoning content first if present (thinking output)
-            if reasoning and reasoning.strip():
-                print(styled("Thinking:", "36m"))
-                print(styled(reasoning, "90m"))
-                print()
 
             if text:
                 self.print_assistant_text(text)
@@ -1360,7 +1335,7 @@ class LocalCode:
                 })
 
             # Continue conversation with tool results
-            response = self.llama_request(self.get_messages_with_system(), TOOLS, enable_thinking=enable_thinking)
+            response = self.llama_request(self.get_messages_with_system(), TOOLS)
             if not response:
                 return
 
