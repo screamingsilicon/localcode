@@ -920,13 +920,13 @@ class LocalCode:
             "stream": False,
         }
         
-        if openai_tools:
-            payload["tools"] = openai_tools
-            payload["tool_choice"] = "auto"
-        
         # Add reasoning_format for thinking mode (llama.cpp API)
         if enable_thinking:
+            print(f"DEBUG: enable_thinking=True, setting reasoning_format=auto")
             payload["reasoning_format"] = "auto"
+        elif openai_tools:
+            payload["tools"] = openai_tools
+            payload["tool_choice"] = "auto"
 
         req = urllib.request.Request(
             f"{LLAMA_HOST}/v1/chat/completions",
