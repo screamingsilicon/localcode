@@ -265,6 +265,56 @@ def render_md(text: str) -> str:
     return "".join(result)
 
 
+def format_tool_call_display(name: str, args: Dict[str, Any]) -> str:
+    """Format tool call arguments for user-friendly display.
+    
+    Instead of showing raw JSON, this returns a concise, meaningful representation
+    of what the tool call does, tailored to each tool type.
+    
+    Args:
+        name: The tool/function name.
+        args: The tool arguments dictionary.
+        
+    Returns:
+        A formatted string describing the tool call.
+    """
+    if name == "run_shell_command":
+        cmd = args.get("command", "")
+        return cmd if cmd else ""
+    
+    elif name == "commit_changes":
+        message = args.get("message", "")
+        return f'"{message}"' if message else ""
+    
+    elif name == "edit_file":
+        path = args.get("path", "")
+        find = args.get("find", "")
+        replace = args.get("replace", "")
+        find_preview = (find[:50] + "...") if len(find) > 50 else find
+        return f"path={path}, find={find_preview!r}"
+    
+    elif name == "write_file":
+        path = args.get("path", "")
+        content = args.get("content", "")
+        lines = len(content.splitlines()) if content else 0
+        return f"path={path} ({lines} lines)"
+    
+    elif name == "get_repo_map":
+        pattern = args.get("pattern", "")
+        include_details = args.get("include_details", True)
+        if pattern:
+            return f"pattern={pattern!r}"
+        return "" if include_details else "include_details=false"
+    
+    elif name == "browser_execute":
+        code = args.get("code", "")
+        code_preview = (code[:60] + "...") if len(code) > 60 else code
+        return code_preview if code_preview else ""
+    
+    # Default: show minimal JSON for unknown tools
+    return json.dumps(args, ensure_ascii=False)[:200]
+
+
 def truncate(lines: List[str], n: int = 500, max_line_len: int = MAX_LINE_LENGTH) -> List[str]:
     """Truncate list of lines to fit within specified limits.
 
@@ -1320,10 +1370,12 @@ class LocalCode:
                     })
                     continue
 
+                # Format tool call display in a user-friendly way
+                display_args = format_tool_call_display(name, args)
                 print(
                     f"{styled(' local ', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} "
                     f"{styled(name, '1;36m')} "
-                    f"{styled(json.dumps(args, ensure_ascii=False)[:200], '90m')}"
+                    f"{styled(display_args, '90m')}"
                 )
                 result = self.execute_tool(name, args)
                 
