@@ -1373,7 +1373,7 @@ class LocalCode:
                 # Format tool call display in a user-friendly way
                 display_args = format_tool_call_display(name, args)
                 print(
-                    f"{styled('local', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')}"
+                    f"{styled('local', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} "
                     f"{styled(name, '1;36m')} "
                     f"{styled(display_args, '90m')}"
                 )
