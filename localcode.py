@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-VERSION: Final[int] = 3
-APP_NAME: Final[str] = "localcode"
-
 import ast
 import datetime
 import difflib
@@ -24,10 +21,13 @@ import time
 import urllib.error
 import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import socketserver
 from pathlib import Path
 from re import Match
 from typing import Any, Dict, Final, List, Optional, Set, Tuple, Union
+
+# Version and app constants
+VERSION: Final[int] = 3
+APP_NAME: Final[str] = "localcode"
 
 # Configuration
 LLAMA_HOST: str = os.getenv("LLAMA_HOST", "http://localhost:8080")
@@ -36,6 +36,10 @@ MAX_FILE_SIZE: Final[int] = 100 * 1024  # 100KB
 MAX_LINE_LENGTH: Final[int] = 500
 MAX_TOOL_LOOPS: Final[int] = 50
 DEFAULT_BRIDGE_PORT: Final[int] = 9876
+GIT_COMMAND_TIMEOUT: Final[int] = 30  # seconds
+BROWSER_EXECUTE_TIMEOUT: Final[int] = 12  # seconds
+BROWSER_COMMAND_TIMEOUT: Final[int] = 30  # seconds
+HTTP_REQUEST_TIMEOUT: Final[int] = 600  # seconds
 # Optional: temperature and other generation params
 TEMPERATURE: float = float(os.getenv("LLAMA_TEMPERATURE", "0.7"))
 MAX_TOKENS: int = int(os.getenv("LLAMA_MAX_TOKENS", "4096"))
@@ -126,7 +130,6 @@ TOOLS: Final[List[Dict[str, Any]]] = [
     },
 ]
 
-
 SYSTEM_PROMPT: Final[str] = (
     "You are a coding expert working inside a local repository tool called 'localcode'.\n\n"
     "Use tools via function calls. Never output XML, markdown code blocks, or any other format for tool calls.\n\n"
@@ -155,7 +158,6 @@ SYSTEM_PROMPT: Final[str] = (
     "Never use the escaped JSON version (with \\n or \\\"). Copy the literal file content only."
 )
 
-
 def ansi(code: str) -> str:
     """Return ANSI escape sequence for terminal styling.
 
@@ -166,7 +168,6 @@ def ansi(code: str) -> str:
         Formatted ANSI escape string.
     """
     return f"\033[{code}"
-
 
 def styled(text: str, style: str) -> str:
     """Wrap text with ANSI style codes for terminal output.
@@ -179,7 +180,6 @@ def styled(text: str, style: str) -> str:
         Text wrapped with style codes and reset code.
     """
     return f"{ansi(style)}{text}{ansi('0m')}"
-
 
 def run(shell_cmd: str) -> Optional[str]:
     """Run shell command and return stripped output or None on error.
@@ -197,9 +197,7 @@ def run(shell_cmd: str) -> Optional[str]:
     except Exception:
         return None
 
-
 _TMUX_WIN: Optional[str] = run("tmux display-message -p '#{window_id}' 2>/dev/null")
-
 
 def title(t: str) -> None:
     """Set terminal title and tmux window name if running in tmux.
@@ -210,7 +208,6 @@ def title(t: str) -> None:
     print(f"\033]0;{t}\007", end="", flush=True)
     if _TMUX_WIN:
         run(f"tmux rename-window -t {_TMUX_WIN} {t!r} 2>/dev/null")
-
 
 def render_md(text: str) -> str:
     """Render markdown-like text with ANSI styling for terminal output.
@@ -264,56 +261,54 @@ def render_md(text: str) -> str:
             result.append(part)
     return "".join(result)
 
-
 def format_tool_call_display(name: str, args: Dict[str, Any]) -> str:
     """Format tool call arguments for user-friendly display.
-    
+
     Instead of showing raw JSON, this returns a concise, meaningful representation
     of what the tool call does, tailored to each tool type.
-    
+
     Args:
         name: The tool/function name.
         args: The tool arguments dictionary.
-        
+
     Returns:
         A formatted string describing the tool call.
     """
     if name == "run_shell_command":
         cmd = args.get("command", "")
         return cmd if cmd else ""
-    
+
     elif name == "commit_changes":
         message = args.get("message", "")
         return f'"{message}"' if message else ""
-    
+
     elif name == "edit_file":
         path = args.get("path", "")
         find = args.get("find", "")
         replace = args.get("replace", "")
         find_preview = (find[:50] + "...") if len(find) > 50 else find
         return f"path={path}, find={find_preview!r}"
-    
+
     elif name == "write_file":
         path = args.get("path", "")
         content = args.get("content", "")
         lines = len(content.splitlines()) if content else 0
         return f"path={path} ({lines} lines)"
-    
+
     elif name == "get_repo_map":
         pattern = args.get("pattern", "")
         include_details = args.get("include_details", True)
         if pattern:
             return f"pattern={pattern!r}"
         return "" if include_details else "include_details=false"
-    
+
     elif name == "browser_execute":
         code = args.get("code", "")
         code_preview = (code[:60] + "...") if len(code) > 60 else code
         return code_preview if code_preview else ""
-    
+
     # Default: show minimal JSON for unknown tools
     return json.dumps(args, ensure_ascii=False)[:200]
-
 
 def truncate(lines: List[str], n: int = 500, max_line_len: int = MAX_LINE_LENGTH) -> List[str]:
     """Truncate list of lines to fit within specified limits.
@@ -335,10 +330,9 @@ def truncate(lines: List[str], n: int = 500, max_line_len: int = MAX_LINE_LENGTH
     lines = [trunc_line(line) for line in lines]
     return lines if len(lines) <= n else lines[:20] + ["[TRUNCATED]"] + lines[-100:]
 
-
 def smart_truncate(lines: List[str], keep_first: int = 1, keep_last: int = 1, max_line_len: int = 80) -> List[str]:
     """Smart truncation for terminal display.
-    
+
     Shows first and last lines, with line count summary in between.
     Great for quickly understanding output structure without clutter.
 
@@ -353,21 +347,19 @@ def smart_truncate(lines: List[str], keep_first: int = 1, keep_last: int = 1, ma
     """
     if not lines:
         return lines
-    
+
     def trunc_line(line: str) -> str:
         return line if len(line) <= max_line_len else line[:max_line_len] + "..."
-    
+
     lines = [trunc_line(line) for line in lines]
-    
+
     if len(lines) <= keep_first + keep_last:
         return lines
-    
+
     skipped = len(lines) - keep_first - keep_last
     return lines[:keep_first] + [f"... {skipped} lines skipped ..."] + lines[-keep_last:]
 
-
 _CACHED_SYSTEM_INFO: Optional[Dict[str, Any]] = None
-
 
 def system_summary() -> Dict[str, Any]:
     """Return cached system information dictionary.
@@ -428,13 +420,11 @@ def system_summary() -> Dict[str, Any]:
             "tools": [tool for tool in tools if shutil.which(tool)],
             "versions": {k: v for k, v in versions.items() if v},
         }
-    except Exception:
+    except Exception as e:
+        # Log error but return empty dict to avoid breaking the application
+        print(styled(f"Warning: Could not gather system info: {e}", "93m"), file=sys.stderr)
         _CACHED_SYSTEM_INFO = {}
     return _CACHED_SYSTEM_INFO
-
-
-
-
 
 def safe_repo_path(root: str, rel_path: str) -> Path:
     """Ensure path is within repository root to prevent path traversal.
@@ -455,7 +445,6 @@ def safe_repo_path(root: str, rel_path: str) -> Path:
     if not str(resolved).startswith(str(root_resolved)):
         raise ValueError(f"path escapes repo: {rel_path}")
     return p
-
 
 def safe_read_file(
     path: str, root: Optional[str] = None, confirm_large: bool = False
@@ -520,7 +509,6 @@ def safe_read_file(
     except OSError as e:
         return None, f"read error: {e}"
 
-
 def get_map(root: str, pattern: Optional[str] = None, include_details: bool = True) -> str:
     """Generate repository file map showing ALL files and Python definitions with line numbers.
 
@@ -542,7 +530,7 @@ def get_map(root: str, pattern: Optional[str] = None, include_details: bool = Tr
         ".exe", ".dll", ".so", ".dylib", ".pyc", ".whl", ".egg",
         ".woff", ".woff2", ".ttf", ".eot",
     }
-    
+
     EXCLUDE_DIRS: Set[str] = {
         ".git", "node_modules", "__pycache__", "venv", ".venv",
         ".tox", "dist", "build", ".eggs", ".mypy_cache",
@@ -550,18 +538,18 @@ def get_map(root: str, pattern: Optional[str] = None, include_details: bool = Tr
         "env", ".env", "data", "datasets", "models", "cache",
         "*.egg-info", ".ipynb_checkpoints"
     }
-    
+
     output = []
     file_count = 0
     excluded_found: Set[str] = set()
     root_path = Path(root)
-    
+
     # Walk filesystem with early pruning
     for dirpath, dirnames, filenames in os.walk(root_path):
         # Prune excluded directories IN PLACE (prevents descent)
         original_dirnames = dirnames.copy()
         dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
-        
+
         # Track excluded directories we found
         for d in original_dirnames:
             if d in EXCLUDE_DIRS:
@@ -570,7 +558,7 @@ def get_map(root: str, pattern: Optional[str] = None, include_details: bool = Tr
                     excluded_found.add(str(rel_dir.relative_to(root_path)))
                 except ValueError:
                     excluded_found.add(d)
-        
+
         for filename in filenames:
             filepath = Path(dirpath) / filename
             try:
@@ -578,17 +566,17 @@ def get_map(root: str, pattern: Optional[str] = None, include_details: bool = Tr
                 rel_path_str = str(rel_path)
             except ValueError:
                 continue
-            
+
             # Apply pattern filter if provided
             if pattern and not fnmatch.fnmatch(rel_path_str, pattern):
                 continue
-            
+
             # Check binary by extension first (fast)
             if filepath.suffix.lower() in BINARY_EXT:
                 output.append(f"{rel_path_str} [binary]")
                 file_count += 1
                 continue
-            
+
             # Check for binary content (sample first bytes)
             try:
                 with open(filepath, "rb") as f:
@@ -601,7 +589,7 @@ def get_map(root: str, pattern: Optional[str] = None, include_details: bool = Tr
                 output.append(f"{rel_path_str} [unreadable]")
                 file_count += 1
                 continue
-            
+
             # Process Python files for element details
             if include_details and filepath.suffix == ".py":
                 output.append(f"{rel_path_str}:")
@@ -610,25 +598,24 @@ def get_map(root: str, pattern: Optional[str] = None, include_details: bool = Tr
                     output.append(f"  {elem['type']} {elem['name']} ({elem['start_line']}-{elem['end_line']})")
             else:
                 output.append(rel_path_str)
-            
+
             file_count += 1
-    
+
     # Add excluded directories to output
     if excluded_found:
         output.append("")
         output.append("# Excluded directories:")
         for exc_dir in sorted(excluded_found):
             output.append(f"  {exc_dir}/")
-    
-    return "\n".join(output)
 
+    return "\n".join(output)
 
 def _extract_python_elements(filepath: Path) -> List[Dict[str, Any]]:
     """Extract Python functions, classes, and methods with line numbers.
-    
+
     Args:
         filepath: Path to Python file.
-        
+
     Returns:
         List of dicts with name, type ('def' or 'class'), and line ranges.
     """
@@ -636,7 +623,7 @@ def _extract_python_elements(filepath: Path) -> List[Dict[str, Any]]:
         source = filepath.read_text()
         tree = ast.parse(source)
         elements: List[Dict[str, Any]] = []
-        
+
         for node in ast.iter_child_nodes(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 elements.append({
@@ -662,24 +649,23 @@ def _extract_python_elements(filepath: Path) -> List[Dict[str, Any]]:
                             "start_line": item.lineno,
                             "end_line": getattr(item, 'end_lineno', item.lineno)
                         })
-        
+
         # Sort by line number
         return sorted(elements, key=lambda e: e["start_line"])
     except Exception:
         return []
 
-
 def validate_path_for_shell(path: str) -> str:
     """Validate and sanitize a path for use in shell commands.
-    
+
     Ensures the path is absolute, exists, and contains no shell metacharacters.
-    
+
     Args:
         path: Path string to validate.
-        
+
     Returns:
         Validated absolute path string.
-        
+
     Raises:
         ValueError: If path is invalid or contains dangerous characters.
     """
@@ -687,46 +673,45 @@ def validate_path_for_shell(path: str) -> str:
     dangerous_chars = set(';&|`$\\(){}[]<>!#\n\r')
     if any(c in path for c in dangerous_chars):
         raise ValueError(f"Path contains invalid characters: {path!r}")
-    
+
     # Resolve to absolute path
     p = Path(path).resolve()
-    
+
     # Verify it exists and is a directory
     if not p.exists():
         raise ValueError(f"Path does not exist: {path!r}")
     if not p.is_dir():
         raise ValueError(f"Path is not a directory: {path!r}")
-    
-    return str(p)
 
+    return str(p)
 
 def is_safe_read_command(cmd: str) -> bool:
     """Check if a shell command is a safe read-only operation.
-    
+
     Whitelists: cat, sed, head, tail, wc, grep, find, ls, pwd, echo, date
     with safe patterns (no pipes to dangerous commands, no redirection to files).
-    
+
     Args:
         cmd: Shell command to check.
-        
+
     Returns:
         True if command appears safe for auto-approval.
     """
     safe_commands = {"cat", "sed", "head", "tail", "wc", "grep", "find", "ls", "pwd", "echo", "date", "file", "which"}
-    
+
     # Remove leading whitespace and get first word
     cmd_stripped = cmd.strip()
     first_word = cmd_stripped.split()[0] if cmd_stripped.split() else ""
-    
+
     # Check if it's a safe command
     if first_word not in safe_commands:
         return False
-    
+
     # Check for command substitution patterns (backticks and $())
     # These can chain commands even if the base command is safe
     if "`" in cmd_stripped or "$(" in cmd_stripped:
         return False
-    
+
     # Check for dangerous patterns
     dangerous_patterns = [
         "| rm", "| xargs rm", "| sh", "| bash", "| eval",
@@ -734,23 +719,22 @@ def is_safe_read_command(cmd: str) -> bool:
         "; rm", "; mv", "; cp", "; chmod", "; chown",
         "&& rm", "|| rm",
     ]
-    
+
     for pattern in dangerous_patterns:
         if pattern in cmd_stripped:
             return False
-    
+
     # For sed, check it's only using safe operations (no in-place editing)
     if first_word == "sed":
         if "-i" in cmd_stripped or ">>" in cmd_stripped or ">" in cmd_stripped:
             return False
-    
+
     # For find, check it's not executing commands
     if first_word == "find":
         if "-exec" in cmd_stripped or "-delete" in cmd_stripped:
             return False
-    
-    return True
 
+    return True
 
 def run_shell_interactive(cmd: str, stream_output: bool = True) -> Tuple[List[str], int]:
     """Run shell command interactively with live output.
@@ -792,7 +776,6 @@ def run_shell_interactive(cmd: str, stream_output: bool = True) -> Tuple[List[st
             print("\n[INTERRUPTED]")
     return output_lines, process.returncode
 
-
 def lint_py(path: str, content: str) -> Tuple[bool, Optional[str]]:
     """Check Python file for syntax errors.
 
@@ -813,20 +796,14 @@ def lint_py(path: str, content: str) -> Tuple[bool, Optional[str]]:
     except SyntaxError as e:
         return False, str(e)
 
-
 class Spinner:
     """Animated terminal spinner for showing progress.
 
     Displays a rotating spinner with pulsing color effect in a background thread.
     """
 
-    def __init__(self, label: str = "localcode") -> None:
-        """Initialize spinner.
-
-        Args:
-            label: Label text (currently unused, kept for compatibility).
-        """
-        self.label: str = label
+    def __init__(self) -> None:
+        """Initialize spinner."""
         self.stop_event: threading.Event = threading.Event()
         self.thread: Optional[threading.Thread] = None
 
@@ -854,7 +831,6 @@ class Spinner:
         if self.thread:
             self.thread.join()
         print("\r", end="", flush=True)
-
 
 class LocalCode:
     """Core agent orchestrating the interactive coding session.
@@ -920,11 +896,22 @@ class LocalCode:
             self._map_cache: Dict[Tuple[Optional[str], bool], str] = {}
         if not hasattr(self, '_map_mtime'):
             self._map_mtime: Dict[Tuple[Optional[str], bool], float] = {}
-        
-        # Check for any file system changes
+
+        # Check for any file system changes by looking at newest file mtime
         root_path = Path(self.repo_root)
-        current_mtime = root_path.stat().st_mtime if root_path.exists() else 0.0
-        
+        if not root_path.exists():
+            current_mtime = 0.0
+        else:
+            # Get the most recent modification time of any file in the repo
+            try:
+                current_mtime = max(
+                    p.stat().st_mtime
+                    for p in root_path.rglob("*")
+                    if p.is_file() and not p.is_symlink()
+                )
+            except (ValueError, OSError):
+                current_mtime = root_path.stat().st_mtime
+
         cached_mtime = self._map_mtime.get(cache_key, -1)
         if cache_key in self._map_cache and abs(current_mtime - cached_mtime) < 0.1:
             return self._map_cache[cache_key]
@@ -1000,8 +987,7 @@ class LocalCode:
             "max_tokens": MAX_TOKENS,
             "stream": False,
         }
-        
- 
+
         if openai_tools:
             payload["tools"] = openai_tools
             payload["tool_choice"] = "auto"
@@ -1018,7 +1004,7 @@ class LocalCode:
         spinner = Spinner()
         spinner.start()
         try:
-            with urllib.request.urlopen(req, timeout=600) as resp:
+            with urllib.request.urlopen(req, timeout=HTTP_REQUEST_TIMEOUT) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
                 self.last_usage = body.get("usage")
                 if self.last_usage:
@@ -1060,7 +1046,7 @@ class LocalCode:
 
     def build_user_message(self, request: str) -> str:
         """Build the user message content with context.
-        
+
         Minimal context: system summary sent once, time always included.
         Agent uses get_repo_map tool and shell commands (cat/grep) to read files.
         """
@@ -1070,7 +1056,7 @@ class LocalCode:
         current_time = now.strftime(f"%A {day}{suffix} of %B %Y, %H:%M %Z")
 
         parts = []
-        
+
         # Send system summary only once
         if not self._initial_context_sent:
             parts.append(f"### System Summary\n{json.dumps(system_summary(), separators=(',', ':'))}")
@@ -1133,37 +1119,35 @@ class LocalCode:
     def tool_get_repo_map(self, args: Dict[str, Any]) -> Dict[str, Any]:
         pattern = args.get("pattern", "")
         include_details = args.get("include_details", True)
-        
+
         result = self.get_repo_map(pattern if pattern else None, include_details)
-        
+
         # Count files in output (lines that are file paths, not comments or indented)
         file_count = len([
             line for line in result.split("\n") 
             if line and not line.startswith("#") and not line.startswith("  ") and not line.startswith("Excluded:")
         ])
-        
+
         print(styled(f"Repository map ({file_count} files)", "36m"))
         print(result)
-        
-        return {"ok": True, "file_count": file_count}
 
- 
+        return {"ok": True, "file_count": file_count}
 
     def tool_write_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
         path = args["path"]
         content = args["content"]
         overwrite = args.get("overwrite", False)
-        
+
         try:
             p = safe_repo_path(self.repo_root, path)
         except ValueError as e:
             return {"ok": False, "error": str(e)}
-        
+
         # Check if file exists
         if p.exists():
             if not overwrite:
                 return {"ok": False, "error": "file already exists (set overwrite=true to replace)"}
-            
+
             # Confirm overwrite
             print(styled(f"⚠ {path} already exists. Overwrite? (y/n): ", "93m"), end="")
             sys.stdout.flush()
@@ -1172,7 +1156,7 @@ class LocalCode:
             except (EOFError, KeyboardInterrupt):
                 print()
                 answer = "n"
-            
+
             if answer != "y":
                 return {"ok": False, "error": "user cancelled overwrite"}
 
@@ -1239,11 +1223,11 @@ class LocalCode:
 
         try:
             p.write_text(new_content)
-            
+
             # Count lines changed
             added = sum(1 for d in diff_lines if d.startswith("+") and not d.startswith("+++") )
             removed = sum(1 for d in diff_lines if d.startswith("-") and not d.startswith("---"))
-            
+
             print(styled(f"Applied {path} (+{added} -{removed})", "32m"))
             return {"ok": True, "path": path, "lines_added": added, "lines_removed": removed}
         except (PermissionError, OSError) as e:
@@ -1276,7 +1260,7 @@ class LocalCode:
             # For auto-approved commands, don't stream output live - only show smart-truncated version
             stream_output = not is_safe_read_command(cmd)
             output_lines, exit_code = run_shell_interactive(cmd, stream_output=stream_output)
-            
+
             # For auto-approved commands, print smart-truncated output to terminal
             # but send full output to LLM
             if is_safe_read_command(cmd):
@@ -1285,7 +1269,7 @@ class LocalCode:
                 print(styled(terminal_output, "90m"))
             else:
                 print(f"{styled(f'$ {cmd}', '90m')}")
-            
+
             # Always send full (but reasonably truncated) output to LLM
             return {
                 "ok": True,
@@ -1298,58 +1282,13 @@ class LocalCode:
 
     def tool_commit_changes(self, args: Dict[str, Any]) -> Dict[str, Any]:
         message = args["message"].strip()
-        if not message:
-            return {"ok": False, "error": "empty commit message"}
+        result = _do_git_commit(self.repo_root, message)
 
-        # Validate repo_root to prevent command injection
-        try:
-            safe_repo_root = validate_path_for_shell(self.repo_root)
-        except ValueError as e:
-            return {"ok": False, "error": f"Invalid repo path: {e}"}
-
-        # Use subprocess with list arguments instead of shell commands
-        try:
-            # Check git status
-            status_result = subprocess.run(
-                ["git", "-C", safe_repo_root, "status", "--porcelain"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if not status_result.stdout.strip():
-                return {"ok": False, "error": "nothing to commit"}
-
-            # Stage all changes
-            add_result = subprocess.run(
-                ["git", "-C", safe_repo_root, "add", "-A"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if add_result.returncode != 0:
-                return {"ok": False, "error": f"git add failed: {add_result.stderr.strip()}"}
-
-            # Commit changes
-            commit_result = subprocess.run(
-                ["git", "-C", safe_repo_root, "commit", "-m", message],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if commit_result.returncode != 0:
-                return {"ok": False, "error": f"git commit failed: {commit_result.stderr.strip()}"}
-            
-            output = commit_result.stdout.strip()
-            print(styled(output, "32m"))
-            
-            # Automatically compress after successful commit (unit of work is complete)
+        # Automatically compress after successful commit (unit of work is complete)
+        if result.get("ok"):
             self.cmd_compress()
-            
-            return {"ok": True, "message": message, "git": output}
-        except subprocess.TimeoutExpired:
-            return {"ok": False, "error": "git command timed out"}
-        except Exception as e:
-            return {"ok": False, "error": f"git error: {e}"}
+
+        return result
 
     def tool_browser_execute(self, args: Dict[str, Any]) -> Dict[str, Any]:
         code = args.get("code", "").strip()
@@ -1458,7 +1397,7 @@ class LocalCode:
                     f"{styled(display_args, '90m')}"
                 )
                 result = self.execute_tool(name, args)
-                
+
                 # Add tool result to messages
                 self.messages.append({
                     "role": "tool",
@@ -1493,7 +1432,7 @@ class LocalCode:
 
     def cmd_compress(self) -> None:
         """Compress conversation by truncating large tool outputs.
-        
+
         Replaces large outputs with summaries while preserving tool metadata.
         - Repo maps: Replace with file count note
         - Shell commands: Keep exit code, truncate output to last 10 lines
@@ -1502,20 +1441,20 @@ class LocalCode:
         """
         compressed_count = 0
         bytes_saved = 0
-        
+
         for msg in self.messages:
             if msg.get("role") != "tool":
                 continue
-            
+
             content = msg.get("content", "")
             if not content:
                 continue
-            
+
             old_size = len(content)
-            
+
             try:
                 result = json.loads(content)
-                
+
                 # Check if this was a repo map tool call
                 if result.get("ok") and "file_count" in result and "output" not in result:
                     # This is likely a repo map result - compress it
@@ -1529,7 +1468,7 @@ class LocalCode:
                     compressed_count += 1
                     bytes_saved += old_size - len(msg["content"])
                     continue
-                
+
                 # Handle shell command outputs
                 if result.get("ok") and "output" in result:
                     output = result["output"]
@@ -1544,7 +1483,7 @@ class LocalCode:
                             if old_size > len(msg["content"]):
                                 compressed_count += 1
                                 bytes_saved += old_size - len(msg["content"])
-                
+
                 # Handle file read/write operations with large content
                 elif "content" in result and isinstance(result["content"], str):
                     if len(result["content"]) > 1000:
@@ -1557,7 +1496,7 @@ class LocalCode:
                             if old_size > len(msg["content"]):
                                 compressed_count += 1
                                 bytes_saved += old_size - len(msg["content"])
-                
+
                 # Generic compression for any large output field
                 elif old_size > 2000:
                     # Truncate the entire JSON if it's very large
@@ -1566,11 +1505,11 @@ class LocalCode:
                     msg["content"] = json.dumps(result)
                     compressed_count += 1
                     bytes_saved += old_size - len(msg["content"])
-                    
+
             except (json.JSONDecodeError, KeyError, TypeError):
                 # If we can't parse it, leave it alone
                 pass
-        
+
         if compressed_count == 0:
             print(styled("No tool outputs large enough to compress.", "93m"))
         else:
@@ -1583,7 +1522,7 @@ class LocalCode:
 
     def _estimate_tokens_from_messages(self) -> int:
         """Estimate total tokens from current messages using bytes/4 heuristic.
-        
+
         Returns:
             Estimated token count based on message content size.
         """
@@ -1632,7 +1571,7 @@ class LocalCode:
         while True:
             title(f"❓ {APP_NAME}")
             last = self.last_usage or {}
-            
+
             # Use estimated tokens after compression, otherwise use actual API tokens
             if self._tokens_estimated:
                 prompt_tokens = self.total_tokens
@@ -1721,41 +1660,41 @@ class LocalCode:
 
             self.run_agent_turn(user_input)
 
-
 # === Integrated Browser Bridge ===
-_bridge_pending: str | None = None
-_bridge_result: dict | None = None
+_bridge_lock: threading.Lock = threading.Lock()
+_bridge_pending: Optional[str] = None
+_bridge_result: Optional[Dict[str, Any]] = None
 _bridge_state: Dict[str, Any] = {"url": "", "title": "", "timestamp": 0}
 _bridge_pending_time: float = 0.0
 
-
 class BridgeHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
+    def do_GET(self) -> None:
         if self.path.startswith('/command'):
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             global _bridge_pending, _bridge_pending_time
-            if _bridge_pending and (time.time() - _bridge_pending_time < 30):
-                resp = {'command': 'execute', 'code': _bridge_pending}
-                _bridge_pending = None
-                _bridge_pending_time = 0.0
-                self.wfile.write(json.dumps(resp).encode('utf-8'))
-            else:
-                self.wfile.write(json.dumps({}).encode('utf-8'))
+            with _bridge_lock:
+                if _bridge_pending and (time.time() - _bridge_pending_time < BROWSER_COMMAND_TIMEOUT):
+                    resp = {'command': 'execute', 'code': _bridge_pending}
+                    _bridge_pending = None
+                    _bridge_pending_time = 0.0
+                    self.wfile.write(json.dumps(resp).encode('utf-8'))
+                else:
+                    self.wfile.write(json.dumps({}).encode('utf-8'))
             return
         self.send_response(404)
         self.end_headers()
 
-    def do_OPTIONS(self):
+    def do_OPTIONS(self) -> None:
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type, Accept')
         self.end_headers()
 
-    def do_POST(self):
+    def do_POST(self) -> None:
         try:
             content_length = int(self.headers.get('Content-Length', 0))
             post_data = self.rfile.read(content_length)
@@ -1764,34 +1703,37 @@ class BridgeHandler(BaseHTTPRequestHandler):
             global _bridge_pending, _bridge_result, _bridge_state, _bridge_pending_time
 
             if self.path.startswith('/execute'):
-                _bridge_pending = data.get('code', '')
-                _bridge_pending_time = time.time()
+                with _bridge_lock:
+                    _bridge_pending = data.get('code', '')
+                    _bridge_pending_time = time.time()
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
                 start_time = time.time()
-                while time.time() - start_time < 12:
-                    if _bridge_result is not None:
-                        result = _bridge_result
-                        _bridge_result = None
-                        _bridge_pending = None
-                        _bridge_pending_time = 0.0
-                        self.wfile.write(json.dumps(result).encode('utf-8'))
-                        return
+                while time.time() - start_time < BROWSER_EXECUTE_TIMEOUT:
+                    with _bridge_lock:
+                        if _bridge_result is not None:
+                            result = _bridge_result
+                            _bridge_result = None
+                            _bridge_pending = None
+                            _bridge_pending_time = 0.0
+                            self.wfile.write(json.dumps(result).encode('utf-8'))
+                            return
                     time.sleep(0.3)
+                with _bridge_lock:
+                    _bridge_pending = None
+                    _bridge_pending_time = 0.0
                 self.wfile.write(json.dumps({
                     'ok': False,
                     'error': 'timeout waiting for browser response'
                 }).encode('utf-8'))
-                _bridge_pending = None
-                _bridge_pending_time = 0.0
 
             elif self.path.startswith('/result'):
-     
-                _bridge_result = data
-                _bridge_pending = None
-                _bridge_pending_time = 0.0
+                with _bridge_lock:
+                    _bridge_result = data
+                    _bridge_pending = None
+                    _bridge_pending_time = 0.0
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
@@ -1799,8 +1741,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({'status': 'ok'}).encode('utf-8'))
 
             elif self.path.startswith('/update'):
-                _bridge_state.clear()
-                _bridge_state.update(data)
+                with _bridge_lock:
+                    _bridge_state.clear()
+                    _bridge_state.update(data)
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
                 self.send_header('Access-Control-Allow-Origin', '*')
@@ -1818,24 +1761,25 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: str) -> None:
         pass  # quiet
 
+def _do_git_commit(repo_root: str, message: str) -> Dict[str, Any]:
+    """Perform a git commit operation.
 
-def main() -> None:
-    LocalCode().repl()
+    Args:
+        repo_root: Repository root path.
+        message: Commit message.
 
-
-def commit_changes(message: str) -> dict:
-    """Standalone commit function for tool usage."""
-    repo_root_raw = run("git rev-parse --show-toplevel") or os.getcwd()
-    
+    Returns:
+        Dict with ok status and result details.
+    """
     if not message or not message.strip():
         return {"ok": False, "error": "empty commit message"}
-    
+
     # Validate repo_root to prevent command injection
     try:
-        safe_repo_root = validate_path_for_shell(repo_root_raw)
+        safe_repo_root = validate_path_for_shell(repo_root)
     except ValueError as e:
         return {"ok": False, "error": f"Invalid repo path: {e}"}
-    
+
     # Use subprocess with list arguments instead of shell commands
     try:
         # Check git status
@@ -1843,31 +1787,31 @@ def commit_changes(message: str) -> dict:
             ["git", "-C", safe_repo_root, "status", "--porcelain"],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=GIT_COMMAND_TIMEOUT,
         )
         if not status_result.stdout.strip():
             return {"ok": False, "error": "nothing to commit"}
-        
+
         # Stage all changes
         add_result = subprocess.run(
             ["git", "-C", safe_repo_root, "add", "-A"],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=GIT_COMMAND_TIMEOUT,
         )
         if add_result.returncode != 0:
             return {"ok": False, "error": f"git add failed: {add_result.stderr.strip()}"}
-        
+
         # Commit changes
         commit_result = subprocess.run(
             ["git", "-C", safe_repo_root, "commit", "-m", message],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=GIT_COMMAND_TIMEOUT,
         )
         if commit_result.returncode != 0:
             return {"ok": False, "error": f"git commit failed: {commit_result.stderr.strip()}"}
-        
+
         output = commit_result.stdout.strip()
         print(styled(output, "32m"))
         return {"ok": True, "message": message, "git": output}
@@ -1876,6 +1820,13 @@ def commit_changes(message: str) -> dict:
     except Exception as e:
         return {"ok": False, "error": f"git error: {e}"}
 
+def main() -> None:
+    LocalCode().repl()
+
+def commit_changes(message: str) -> Dict[str, Any]:
+    """Standalone commit function for tool usage."""
+    repo_root_raw = run("git rev-parse --show-toplevel") or os.getcwd()
+    return _do_git_commit(repo_root_raw, message)
 
 if __name__ == "__main__":
     main()
