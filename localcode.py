@@ -950,7 +950,7 @@ class LocalCode:
                         self.total_tokens += prompt_tokens + completion_tokens
                     self._tokens_estimated = False  # Reset when we get real API data
                 spinner.stop()
-                print(f"{styled(' local ', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} {styled('done', '90m')}\n")
+                print(f"{styled(' local ', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} {styled('✓', '32m')} {styled(f'tokens: {self.total_tokens:,}', '90m')}\n")
                 return body
         except urllib.error.HTTPError as e:
             spinner.stop()
