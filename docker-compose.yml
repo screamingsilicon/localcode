@@ -1,0 +1,50 @@
+# Docker Compose for localcode - GPU Required
+# Tested on RTX 5090: ~60 tokens/second with Qwen3.5-27B
+#
+# Prerequisites:
+# - NVIDIA GPU with CUDA support
+# - NVIDIA Docker driver installed
+#
+# Usage:
+#   docker compose up -d
+#   export LLAMA_HOST="http://localhost:8123"
+#   python3 localcode.py
+
+services:
+  qwen3-llm:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: qwen3-llm
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+    volumes:
+      # Mount a cache directory for HuggingFace downloads
+      - ./unsloth:/root/.cache/llama.cpp:rw
+    environment:
+      - LLAMA_CACHE=/root/.cache/llama.cpp
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - "-hf"
+      - "unsloth/Qwen3.5-27B-GGUF:UD-Q6_K_XL"
+      - "-ngl"
+      - "99"
+      - "--ctx-size"
+      - "90000"
+      - "--temp"
+      - "0.7"
+      - "--top-p"
+      - "0.9"
+      - "--top-k"
+      - "20"
+      - "--min-p"
+      - "0.0"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8123"
