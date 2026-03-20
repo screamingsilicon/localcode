@@ -97,6 +97,8 @@ The assistant will:
 | `run_shell_command` | Execute shell commands (cat, grep, sed, etc.) |
 | `commit_changes` | Stage and commit changes with git |
 | `browser_execute` | Run JavaScript in the active browser tab |
+| `create_eval` | Create an evaluation function for autoresearch optimization |
+| `start_autoresearch` | Begin an automated optimization loop |
 
 ### Commands
 
@@ -109,6 +111,127 @@ The assistant will:
 - `/help` - Show all commands
 - `!<command>` - Run shell command directly
 - `/exit` - Exit
+
+## AutoResearch Mode
+
+localcode can run automated optimization loops to improve your code iteratively. This is useful for performance tuning, code quality improvements, or any task that can be measured.
+
+### How It Works
+
+1. **Define an evaluation function** - Create `eval.py` in your repository root with a function that returns a numeric score
+2. **Request optimization** - Ask localcode to optimize your code for a specific goal
+3. **Agent runs optimization loop** - localcode iteratively makes changes, evaluates them, and keeps improvements
+4. **Best version is tracked** - The best-performing code is tagged with `autoresearch-best`
+
+### Example: Optimizing Performance
+
+**Step 1: Create an eval function**
+
+```python
+# eval.py
+def evaluate() -> float:
+    """Measure execution time. Return negative time (higher is better)."""
+    import time
+    from src.solver import solve
+    
+    start = time.time()
+    solve()
+    elapsed = time.time() - start
+    
+    return -elapsed  # Negative because lower time = better
+```
+
+**Step 2: Request optimization**
+
+```
+> Make the solver in src/solver.py faster
+```
+
+localcode will:
+- Create or use your `eval.py`
+- Run an optimization loop (default 20 iterations)
+- Make changes, test, and keep improvements
+- Stop early if no improvement for 5 iterations
+
+**Step 3: Review results**
+
+```
+[AutoResearch] ✓ Optimization complete
+  Best score: -0.042s (from -0.156s baseline)
+  Total iterations: 8
+```
+
+The best version is tagged as `autoresearch-best` in git.
+
+### Eval Function Guidelines
+
+Your `eval.py` should:
+
+- **Be deterministic** - Same code produces same score
+- **Run quickly** - Under 30 seconds per evaluation
+- **Have no side effects** - Don't modify files or state
+- **Return a float** - Higher is better (use negative for time/memory)
+- **Be importable** - No arguments needed
+
+### Common Eval Patterns
+
+**Performance (execution time):**
+```python
+def evaluate() -> float:
+    import time
+    from src.app import main
+    start = time.time()
+    main()
+    return -(time.time() - start)  # Negative time
+```
+
+**Memory usage:**
+```python
+def evaluate() -> float:
+    import tracemalloc
+    from src.app import main
+    tracemalloc.start()
+    main()
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    return -peak / 1_000_000  # Negative MB
+```
+
+**Test pass rate:**
+```python
+def evaluate() -> float:
+    import subprocess
+    result = subprocess.run(["python", "-m", "pytest", "-q"], 
+                           capture_output=True, text=True)
+    return 1.0 if result.returncode == 0 else 0.0
+```
+
+**Code quality (complexity):**
+```python
+def evaluate() -> float:
+    from radon.complexity import cc_analysis
+    result = cc_analysis("src/solver.py")
+    avg_complexity = result.average()
+    return 10 - min(avg_complexity, 10)  # Lower complexity = higher score
+```
+
+### State Persistence
+
+AutoResearch saves progress to `.autoresearch/log.json`:
+- Current iteration count
+- Best score and commit hash
+- Full history of all iterations
+- Optimization status
+
+You can interrupt and resume optimization at any time.
+
+### Best Practices
+
+1. **Start simple** - Begin with a basic eval, refine as needed
+2. **Test your eval** - Ensure it works before starting optimization
+3. **Watch the iterations** - Agent shows progress and can be interrupted
+4. **Review changes** - Check git diff before accepting improvements
+5. **Use for clear goals** - Works best when success is measurable
 
 ## Docker Setup
 
