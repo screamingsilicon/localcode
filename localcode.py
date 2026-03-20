@@ -129,6 +129,42 @@ TOOLS: Final[List[Dict[str, Any]]] = [
             "required": ["code"],
         },
     },
+    {
+        "type": "function",
+        "name": "create_eval",
+        "description": "Create an evaluation function for autoresearch optimization. Analyzes the codebase and proposes an eval.py based on the goal. Requires user approval before writing.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "What to optimize (e.g., 'make faster', 'improve quality')"},
+                "eval_type": {
+                    "type": "string",
+                    "enum": ["timing", "memory", "accuracy", "quality", "security", "coverage", "custom"],
+                    "description": "Type of metric to measure"
+                },
+                "target_files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Files to evaluate (optional, auto-detected)"
+                }
+            },
+            "required": ["goal"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "start_autoresearch",
+        "description": "Begin an autoresearch optimization loop. Requires existing eval.py or will prompt to create one. Only call when user explicitly requests optimization.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "Optimization goal"},
+                "max_iterations": {"type": "integer", "description": "Maximum iterations (default: 20)"},
+                "eval_path": {"type": "string", "description": "Path to eval function (default: eval.py)"}
+            },
+            "required": ["goal"],
+        },
+    },
 ]
 
 SYSTEM_PROMPT: Final[str] = (
@@ -313,28 +349,28 @@ def format_tool_call_display(name: str, args: Dict[str, Any]) -> str:
 
 def format_python_code(content: str, indent_size: int = 4) -> str:
     """Minimal Python code formatter.
-    
+
     Handles common issues: trailing whitespace, inconsistent indentation,
     extra blank lines, missing file ending newline.
-    
+
     Args:
         content: Python source code to format.
         indent_size: Number of spaces per indentation level (default 4).
-        
+
     Returns:
         Formatted Python source code.
     """
     lines = content.split('\n')
     formatted: List[str] = []
     prev_was_blank = False
-    
+
     for line in lines:
         # Strip trailing whitespace
         line = line.rstrip()
-        
+
         # Convert tabs to spaces (if needed)
         line = line.expandtabs(indent_size)
-        
+
         # Skip consecutive blank lines (keep at most one)
         is_blank = len(line.strip()) == 0
         if is_blank:
@@ -342,20 +378,19 @@ def format_python_code(content: str, indent_size: int = 4) -> str:
                 formatted.append('')
             prev_was_blank = True
             continue
-        
+
         prev_was_blank = False
         formatted.append(line)
-    
+
     # Ensure single trailing newline
     result = '\n'.join(formatted)
     if not result.endswith('\n'):
         result += '\n'
-    
+
     # Remove multiple trailing newlines
     result = result.rstrip('\n') + '\n'
-    
-    return result
 
+    return result
 
 def truncate(lines: List[str], n: int = 500, max_line_len: int = MAX_LINE_LENGTH) -> List[str]:
     """Truncate list of lines to fit within specified limits.
@@ -1171,7 +1206,7 @@ class LocalCode:
 
         # Count files in output (lines that are file paths, not comments or indented)
         file_count = len([
-            line for line in result.split("\n") 
+            line for line in result.split("\n")
             if line and not line.startswith("#") and not line.startswith("  ") and not line.startswith("Excluded:")
         ])
 
@@ -1411,6 +1446,354 @@ class LocalCode:
         except Exception as e:
             return {"ok": False, "error": f"bridge not reachable (port {self.bridge_port}): {e}. Make sure Chrome extension is loaded + popup port matches."}
 
+    # =========================================================================
+    # AutoResearch Tools
+    # =========================================================================
+
+    def tool_create_eval(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Propose and create an eval function based on the goal."""
+        goal = args.get("goal", "")
+        eval_type = args.get("eval_type", "custom")
+        target_files = args.get("target_files", [])
+
+        eval_code = self._propose_eval(goal, eval_type, target_files)
+
+        print(styled("\n[APPROVE] Create eval.py?", "1;36m"))
+        print(styled("─" * 60, "90m"))
+        print(eval_code)
+        print(styled("─" * 60, "90m"), end="")
+
+        test_score = self._test_eval(eval_code)
+        if test_score is not None:
+            print(f"\n{styled('Test score:', '90m')} {test_score}")
+
+        print(f"\n{styled('[y/n/edit/skip]: ', '1m')}", end="")
+        sys.stdout.flush()
+
+        try:
+            answer = input().strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return {"ok": False, "error": "user cancelled"}
+
+        if answer == "n" or answer == "skip":
+            return {"ok": False, "denied": True, "error": "user declined"}
+
+        if answer == "edit":
+            eval_path = Path(self.repo_root) / "eval.py"
+            eval_path.write_text(eval_code)
+            print(styled(f"\n✓ Wrote eval.py for editing", "32m"))
+            print(styled("Edit the file, then run /autoresearch to continue.", "90m"))
+            return {"ok": True, "edited": True, "path": "eval.py"}
+
+        if answer != "y":
+            return {"ok": False, "error": "invalid response"}
+
+        eval_path = Path(self.repo_root) / "eval.py"
+        eval_path.write_text(eval_code)
+        print(styled(f"\n✓ Created eval.py", "32m"))
+
+        return {"ok": True, "path": "eval.py", "goal": goal}
+
+    def tool_start_autoresearch(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Start the autoresearch optimization loop."""
+        goal = args.get("goal", "")
+        max_iterations = args.get("max_iterations", 20)
+        eval_path = args.get("eval_path", "eval.py")
+
+        eval_file = Path(self.repo_root) / eval_path
+        if not eval_file.exists():
+            return {"ok": False, "error": f"{eval_path} not found. Use create_eval first."}
+
+        test_score = self._test_eval(eval_file.read_text())
+        if test_score is None:
+            return {"ok": False, "error": "eval.py failed to run"}
+
+        print(styled(f"\n[AutoResearch] Starting optimization", "1;36m"))
+        print(styled(f"  Goal: {goal}", "90m"))
+        print(styled(f"  Eval: {eval_path} (test score: {test_score})", "90m"))
+        print(styled(f"  Max iterations: {max_iterations}", "90m"))
+        print()
+
+        self._autoresearch_state = AutoResearchState(self.repo_root)
+        self._autoresearch_state.state.update({
+            "goal": goal,
+            "eval_path": eval_path,
+            "max_iterations": max_iterations,
+            "status": "running",
+        })
+
+        self._run_autoresearch_loop()
+
+        return {"ok": True, "completed": True}
+
+    def _propose_eval(self, goal: str, eval_type: str, target_files: List[str]) -> str:
+        """Generate eval.py code based on goal and codebase analysis."""
+        if not target_files:
+            target_files = self._find_entry_points()
+
+        if eval_type == "timing":
+            return self._generate_timing_eval(target_files)
+        elif eval_type == "memory":
+            return self._generate_memory_eval(target_files)
+        elif eval_type == "quality":
+            return self._generate_quality_eval(target_files)
+        elif eval_type == "accuracy":
+            return self._generate_accuracy_eval(target_files)
+        return self._generate_timing_eval(target_files)
+
+    def _generate_timing_eval(self, target_files: List[str]) -> str:
+        """Generate timing-based eval."""
+        main_func = self._find_main_function(target_files)
+        module_path = target_files[0].replace("/", ".").replace(".py", "") if target_files else "src.solver"
+
+        return f'''"""
+Evaluation function for autoresearch.
+Metric: Execution time (lower is better)
+"""
+
+import time
+
+def evaluate() -> float:
+    """Measure execution time. Lower is better."""
+    from {module_path} import {main_func}
+
+    times = []
+    for _ in range(3):
+        start = time.time()
+        {main_func}()
+        times.append(time.time() - start)
+
+    return sum(times) / len(times)
+'''
+
+    def _generate_memory_eval(self, target_files: List[str]) -> str:
+        """Generate memory-based eval."""
+        main_func = self._find_main_function(target_files)
+        module_path = target_files[0].replace("/", ".").replace(".py", "") if target_files else "src.solver"
+
+        return f'''"""
+Evaluation function for autoresearch.
+Metric: Peak memory usage in MB (lower is better)
+"""
+
+import tracemalloc
+
+def evaluate() -> float:
+    """Measure peak memory usage. Lower is better."""
+    from {module_path} import {main_func}
+
+    tracemalloc.start()
+    {main_func}()
+    current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    return peak / 1_000_000
+'''
+
+    def _generate_quality_eval(self, target_files: List[str]) -> str:
+        """Generate LLM-based quality eval."""
+        return '''"""
+Evaluation function for autoresearch.
+Metric: LLM-rated code quality (1-10, higher is better)
+"""
+
+import requests
+from pathlib import Path
+
+def evaluate() -> float:
+    """LLM rates code quality 1-10. Higher is better."""
+    code = ""
+    for py_file in Path("src").glob("*.py"):
+        code += f"# === {{py_file}} ===\\n"
+        code += py_file.read_text()
+        code += "\\n\\n"
+    code = code[:15000]
+
+    prompt = f"""
+Rate this code 1-10 for maintainability. Return only a number between 1 and 10.
+
+{{code}}
+"""
+
+    response = requests.post(
+        "http://localhost:8080/v1/chat/completions",
+        json={"model": "local", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3},
+        timeout=30
+    )
+    content = response.json()["choices"][0]["message"]["content"].strip()
+    try:
+        return float(content)
+    except ValueError:
+        return 5.0
+'''
+
+    def _generate_accuracy_eval(self, target_files: List[str]) -> str:
+        """Generate accuracy-based eval."""
+        return '''"""
+Evaluation function for autoresearch.
+Metric: Test pass rate (higher is better)
+"""
+
+import subprocess
+
+def evaluate() -> float:
+    """Run tests and return pass rate."""
+    result = subprocess.run(["python", "-m", "pytest", "tests/", "-q"],
+                           capture_output=True, text=True, timeout=60)
+    output = result.stdout
+    if "passed" in output:
+        try:
+            passed = len([l for l in output.split("\\n") if "PASSED" in l])
+            failed = len([l for l in output.split("\\n") if "FAILED" in l])
+            total = passed + failed
+            return passed / total if total > 0 else 0.0
+        except:
+            pass
+    return 0.0 if result.returncode != 0 else 1.0
+'''
+
+    def _test_eval(self, eval_code: str) -> Optional[float]:
+        """Test eval function and return score."""
+        try:
+            temp_path = Path(self.repo_root) / "eval_test_temp.py"
+            temp_path.write_text(eval_code)
+            result = subprocess.run(
+                ["python", "-c", "import sys; sys.path.insert(0, '.'); from eval_test_temp import evaluate; print(evaluate())"],
+                capture_output=True, text=True, timeout=30, cwd=self.repo_root
+            )
+            temp_path.unlink(missing_ok=True)
+            if result.returncode != 0:
+                print(styled(f"[AutoResearch] ⚠ Eval test failed: {result.stderr[:200]}", "93m"))
+                return None
+            return float(result.stdout.strip())
+        except Exception as e:
+            print(styled(f"[AutoResearch] ⚠ Eval test error: {e}", "93m"))
+            return None
+
+    def _run_autoresearch_loop(self):
+        """Run the optimization loop."""
+        state = self._autoresearch_state.state
+        max_iter = state["max_iterations"]
+        no_improvement_count = 0
+        max_no_improvement = 5
+
+        for iteration in range(state.get("current_iteration", 0), max_iter):
+            iteration += 1
+            state["current_iteration"] = iteration
+            print(styled(f"\\n[AutoResearch] Iteration {iteration}/{max_iter}", "1;36m"))
+
+            prompt = self._build_autoresearch_prompt(iteration)
+            self.run_agent_turn(prompt)
+            score = self._run_eval(state["eval_path"])
+
+            if score is None:
+                print(styled("[AutoResearch] ⚠ Eval failed, skipping iteration", "93m"))
+                continue
+
+            state["history"].append({"iteration": iteration, "score": score, "commit": run("git rev-parse HEAD") or "none"})
+
+            best = state.get("best_score")
+            if best is None or score > best:
+                state["best_score"] = score
+                state["best_commit"] = run("git rev-parse HEAD")
+                no_improvement_count = 0
+                self._save_best_version()
+                print(styled(f"[AutoResearch] ✓ New best: {score:.4f}", "32m"))
+            else:
+                no_improvement_count += 1
+                print(styled(f"[AutoResearch] Score: {score:.4f} (best: {best:.4f})", "90m"))
+
+            self._autoresearch_state.save()
+
+            if no_improvement_count >= max_no_improvement:
+                print(styled(f"\\n[AutoResearch] No improvement for {max_no_improvement} iterations, stopping", "93m"))
+                break
+
+        state["status"] = "completed"
+        self._autoresearch_state.save()
+        print(styled("\\n[AutoResearch] ✓ Optimization complete", "32m"))
+        print(styled(f"  Best score: {state['best_score']:.4f}", "90m"))
+        print(styled(f"  Total iterations: {iteration}", "90m"))
+
+    def _build_autoresearch_prompt(self, iteration: int) -> str:
+        """Build prompt for autoresearch iteration."""
+        state = self._autoresearch_state.state
+        recent = state.get("history", [])[-3:] if len(state.get("history", [])) >= 3 else state.get("history", [])
+        history_text = "\\n".join(f"  Iteration {h['iteration']}: score={h['score']:.4f}" for h in recent) if recent else "  (none yet)"
+        best_score = f"{state.get('best_score', 0):.4f}" if state.get('best_score') else "N/A"
+
+        return f"""
+AUTORESEARCH OPTIMIZATION - Iteration {iteration}
+
+Goal: {state['goal']}
+Current best score: {best_score}
+
+Recent history:
+{history_text}
+
+Please make changes to improve the score. The eval function in {state['eval_path']} measures the metric.
+Remember: Try different approaches if previous attempts didn't work.
+"""
+
+    def _run_eval(self, eval_path: str) -> Optional[float]:
+        """Run the eval function and return score."""
+        try:
+            module_name = eval_path.replace(".py", "").replace("/", "_")
+            result = subprocess.run(
+                ["python", "-c", f"import sys; sys.path.insert(0, '.'); import {module_name}; print({module_name}.evaluate())"],
+                capture_output=True, text=True, timeout=60, cwd=self.repo_root
+            )
+            if result.returncode != 0:
+                return None
+            return float(result.stdout.strip())
+        except Exception as e:
+            print(styled(f"[AutoResearch] Eval error: {e}", "31m"))
+            return None
+
+    def _save_best_version(self):
+        """Create git tag for best version."""
+        commit = self._autoresearch_state.state.get("best_commit")
+        if commit:
+            run(f"git tag -f autoresearch-best {commit}")
+
+    def _find_entry_points(self) -> List[str]:
+        """Find main entry point files in the repository."""
+        entry_points = []
+        common_names = ["main.py", "solver.py", "app.py", "server.py", "api.py"]
+        for name in common_names:
+            path = Path(self.repo_root) / name
+            if path.exists():
+                entry_points.append(name)
+                continue
+            src_path = Path(self.repo_root) / "src" / name
+            if src_path.exists():
+                entry_points.append(f"src/{name}")
+        if not entry_points:
+            for py_file in Path(self.repo_root).rglob("*.py"):
+                if "test" not in str(py_file) and "eval" not in str(py_file):
+                    try:
+                        content = py_file.read_text()
+                        if "if __name__" in content or "def main()" in content:
+                            rel_path = str(py_file.relative_to(self.repo_root))
+                            entry_points.append(rel_path)
+                    except:
+                        pass
+        return entry_points[:5]
+
+    def _find_main_function(self, target_files: List[str]) -> str:
+        """Find the main function to call in target files."""
+        for filepath in target_files:
+            full_path = Path(self.repo_root) / filepath
+            try:
+                content = full_path.read_text()
+                for name in ["main", "solve", "run", "process", "compute"]:
+                    if f"def {name}(" in content:
+                        return name
+            except:
+                pass
+        return "main"
+
     def execute_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if name == "get_repo_map":
             return self.tool_get_repo_map(args)
@@ -1424,6 +1807,10 @@ class LocalCode:
             return self.tool_commit_changes(args)
         if name == "browser_execute":
             return self.tool_browser_execute(args)
+        if name == "create_eval":
+            return self.tool_create_eval(args)
+        if name == "start_autoresearch":
+            return self.tool_start_autoresearch(args)
         return {"ok": False, "error": f"unknown tool: {name}"}
 
     def run_agent_turn(self, request: str) -> None:
@@ -1858,6 +2245,56 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: str) -> None:
         pass  # quiet
+
+# =========================================================================
+# AutoResearch State Management
+# =========================================================================
+
+class AutoResearchState:
+    """Persistent state for autoresearch optimization loops."""
+
+    def __init__(self, repo_root: str):
+        self.repo_root = repo_root
+        self.state_dir = Path(repo_root) / ".autoresearch"
+        self.state_dir.mkdir(exist_ok=True)
+        self.log_path = self.state_dir / "log.json"
+        self.state = self._load_state()
+
+    def _load_state(self) -> Dict[str, Any]:
+        """Load state from disk or return empty."""
+        if self.log_path.exists():
+            try:
+                return json.loads(self.log_path.read_text())
+            except Exception:
+                pass
+        return {
+            "goal": "",
+            "eval_path": "eval.py",
+            "max_iterations": 20,
+            "current_iteration": 0,
+            "best_score": None,
+            "best_commit": None,
+            "history": [],
+            "status": "idle",
+        }
+
+    def save(self):
+        """Persist state to disk."""
+        self.log_path.write_text(json.dumps(self.state, indent=2))
+
+    def reset(self):
+        """Clear state for new optimization."""
+        self.state = {
+            "goal": self.state.get("goal", ""),
+            "eval_path": self.state.get("eval_path", "eval.py"),
+            "max_iterations": self.state.get("max_iterations", 20),
+            "current_iteration": 0,
+            "best_score": None,
+            "best_commit": None,
+            "history": [],
+            "status": "idle",
+        }
+        self.save()
 
 def _do_git_commit(repo_root: str, message: str) -> Dict[str, Any]:
     """Perform a git commit operation.
