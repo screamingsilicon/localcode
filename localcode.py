@@ -132,21 +132,12 @@ TOOLS: Final[List[Dict[str, Any]]] = [
     {
         "type": "function",
         "name": "create_eval",
-        "description": "Create an evaluation function for autoresearch optimization. Analyzes the codebase and proposes an eval.py based on the goal. Requires user approval before writing.",
+        "description": "Create an evaluation function for autoresearch optimization. The eval.py file should be placed in the repository root and export: def evaluate() -> float. Return a numeric score (higher is better, unless measuring time/memory where lower is better). The eval should be deterministic, run quickly (<30s), have no side effects, and be importable without arguments. Common patterns: performance (execution time/memory), correctness (test pass rate), quality (complexity metrics), ML (accuracy/loss). Example: def evaluate() -> float: from src.solver import solve; import time; start = time.time(); solve(); return -(time.time() - start). Requires user approval before writing.",
         "parameters": {
             "type": "object",
             "properties": {
                 "goal": {"type": "string", "description": "What to optimize (e.g., 'make faster', 'improve quality')"},
-                "eval_type": {
-                    "type": "string",
-                    "enum": ["timing", "memory", "accuracy", "quality", "security", "coverage", "custom"],
-                    "description": "Type of metric to measure"
-                },
-                "target_files": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Files to evaluate (optional, auto-detected)"
-                }
+                "target_file": {"type": "string", "description": "File containing code to evaluate (optional)"}
             },
             "required": ["goal"],
         },
@@ -1453,47 +1444,18 @@ class LocalCode:
     def tool_create_eval(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Propose and create an eval function based on the goal."""
         goal = args.get("goal", "")
-        eval_type = args.get("eval_type", "custom")
-        target_files = args.get("target_files", [])
+        target_file = args.get("target_file")
 
-        eval_code = self._propose_eval(goal, eval_type, target_files)
-
-        print(styled("\n[APPROVE] Create eval.py?", "1;36m"))
-        print(styled("─" * 60, "90m"))
-        print(eval_code)
-        print(styled("─" * 60, "90m"), end="")
-
-        test_score = self._test_eval(eval_code)
-        if test_score is not None:
-            print(f"\n{styled('Test score:', '90m')} {test_score}")
-
-        print(f"\n{styled('[y/n/edit/skip]: ', '1m')}", end="")
-        sys.stdout.flush()
-
-        try:
-            answer = input().strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return {"ok": False, "error": "user cancelled"}
-
-        if answer == "n" or answer == "skip":
-            return {"ok": False, "denied": True, "error": "user declined"}
-
-        if answer == "edit":
-            eval_path = Path(self.repo_root) / "eval.py"
-            eval_path.write_text(eval_code)
-            print(styled(f"\n✓ Wrote eval.py for editing", "32m"))
-            print(styled("Edit the file, then run /autoresearch to continue.", "90m"))
-            return {"ok": True, "edited": True, "path": "eval.py"}
-
-        if answer != "y":
-            return {"ok": False, "error": "invalid response"}
-
-        eval_path = Path(self.repo_root) / "eval.py"
-        eval_path.write_text(eval_code)
-        print(styled(f"\n✓ Created eval.py", "32m"))
-
-        return {"ok": True, "path": "eval.py", "goal": goal}
+        # Signal to agent that eval creation was requested
+        # Agent will use its knowledge to generate appropriate eval code
+        # based on the tool description guidelines
+        return {
+            "ok": True,
+            "message": f"Eval creation requested for goal: {goal}",
+            "goal": goal,
+            "target_file": target_file,
+            "note": "Agent should generate eval.py code based on tool description guidelines and present it to user for approval"
+        }
 
     def tool_start_autoresearch(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Start the autoresearch optimization loop."""
@@ -1527,131 +1489,11 @@ class LocalCode:
 
         return {"ok": True, "completed": True}
 
-    def _propose_eval(self, goal: str, eval_type: str, target_files: List[str]) -> str:
-        """Generate eval.py code based on goal and codebase analysis."""
-        if not target_files:
-            target_files = self._find_entry_points()
-
-        if eval_type == "timing":
-            return self._generate_timing_eval(target_files)
-        elif eval_type == "memory":
-            return self._generate_memory_eval(target_files)
-        elif eval_type == "quality":
-            return self._generate_quality_eval(target_files)
-        elif eval_type == "accuracy":
-            return self._generate_accuracy_eval(target_files)
-        return self._generate_timing_eval(target_files)
-
-    def _generate_timing_eval(self, target_files: List[str]) -> str:
-        """Generate timing-based eval."""
-        main_func = self._find_main_function(target_files)
-        module_path = target_files[0].replace("/", ".").replace(".py", "") if target_files else "src.solver"
-
-        return f'''"""
-Evaluation function for autoresearch.
-Metric: Execution time (lower is better)
-"""
-
-import time
-
-def evaluate() -> float:
-    """Measure execution time. Lower is better."""
-    from {module_path} import {main_func}
-
-    times = []
-    for _ in range(3):
-        start = time.time()
-        {main_func}()
-        times.append(time.time() - start)
-
-    return sum(times) / len(times)
-'''
-
-    def _generate_memory_eval(self, target_files: List[str]) -> str:
-        """Generate memory-based eval."""
-        main_func = self._find_main_function(target_files)
-        module_path = target_files[0].replace("/", ".").replace(".py", "") if target_files else "src.solver"
-
-        return f'''"""
-Evaluation function for autoresearch.
-Metric: Peak memory usage in MB (lower is better)
-"""
-
-import tracemalloc
-
-def evaluate() -> float:
-    """Measure peak memory usage. Lower is better."""
-    from {module_path} import {main_func}
-
-    tracemalloc.start()
-    {main_func}()
-    current, peak = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-
-    return peak / 1_000_000
-'''
-
-    def _generate_quality_eval(self, target_files: List[str]) -> str:
-        """Generate LLM-based quality eval."""
-        return '''"""
-Evaluation function for autoresearch.
-Metric: LLM-rated code quality (1-10, higher is better)
-"""
-
-import requests
-from pathlib import Path
-
-def evaluate() -> float:
-    """LLM rates code quality 1-10. Higher is better."""
-    code = ""
-    for py_file in Path("src").glob("*.py"):
-        code += f"# === {{py_file}} ===\\n"
-        code += py_file.read_text()
-        code += "\\n\\n"
-    code = code[:15000]
-
-    prompt = f"""
-Rate this code 1-10 for maintainability. Return only a number between 1 and 10.
-
-{{code}}
-"""
-
-    response = requests.post(
-        "http://localhost:8080/v1/chat/completions",
-        json={"model": "local", "messages": [{"role": "user", "content": prompt}], "temperature": 0.3},
-        timeout=30
-    )
-    content = response.json()["choices"][0]["message"]["content"].strip()
-    try:
-        return float(content)
-    except ValueError:
-        return 5.0
-'''
-
-    def _generate_accuracy_eval(self, target_files: List[str]) -> str:
-        """Generate accuracy-based eval."""
-        return '''"""
-Evaluation function for autoresearch.
-Metric: Test pass rate (higher is better)
-"""
-
-import subprocess
-
-def evaluate() -> float:
-    """Run tests and return pass rate."""
-    result = subprocess.run(["python", "-m", "pytest", "tests/", "-q"],
-                           capture_output=True, text=True, timeout=60)
-    output = result.stdout
-    if "passed" in output:
-        try:
-            passed = len([l for l in output.split("\\n") if "PASSED" in l])
-            failed = len([l for l in output.split("\\n") if "FAILED" in l])
-            total = passed + failed
-            return passed / total if total > 0 else 0.0
-        except:
-            pass
-    return 0.0 if result.returncode != 0 else 1.0
-'''
+    def _propose_eval(self, goal: str, target_file: Optional[str] = None) -> str:
+        """Ask LLM to propose an eval.py based on goal and codebase."""
+        # This will be handled by the agent using the tool description
+        # The agent will read the codebase and generate appropriate eval code
+        return ""
 
     def _test_eval(self, eval_code: str) -> Optional[float]:
         """Test eval function and return score."""
@@ -1756,43 +1598,6 @@ Remember: Try different approaches if previous attempts didn't work.
         commit = self._autoresearch_state.state.get("best_commit")
         if commit:
             run(f"git tag -f autoresearch-best {commit}")
-
-    def _find_entry_points(self) -> List[str]:
-        """Find main entry point files in the repository."""
-        entry_points = []
-        common_names = ["main.py", "solver.py", "app.py", "server.py", "api.py"]
-        for name in common_names:
-            path = Path(self.repo_root) / name
-            if path.exists():
-                entry_points.append(name)
-                continue
-            src_path = Path(self.repo_root) / "src" / name
-            if src_path.exists():
-                entry_points.append(f"src/{name}")
-        if not entry_points:
-            for py_file in Path(self.repo_root).rglob("*.py"):
-                if "test" not in str(py_file) and "eval" not in str(py_file):
-                    try:
-                        content = py_file.read_text()
-                        if "if __name__" in content or "def main()" in content:
-                            rel_path = str(py_file.relative_to(self.repo_root))
-                            entry_points.append(rel_path)
-                    except:
-                        pass
-        return entry_points[:5]
-
-    def _find_main_function(self, target_files: List[str]) -> str:
-        """Find the main function to call in target files."""
-        for filepath in target_files:
-            full_path = Path(self.repo_root) / filepath
-            try:
-                content = full_path.read_text()
-                for name in ["main", "solve", "run", "process", "compute"]:
-                    if f"def {name}(" in content:
-                        return name
-            except:
-                pass
-        return "main"
 
     def execute_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if name == "get_repo_map":
