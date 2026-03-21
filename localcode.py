@@ -24,7 +24,71 @@ import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from re import Match
-from typing import Any, Dict, Final, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Final, List, Optional, Set, Tuple, TypedDict, Union
+
+# TypedDict definitions for better type hints
+class SystemInfo(TypedDict, total=False):
+    """System information dictionary."""
+    os: str
+    release: str
+    machine: str
+    python: str
+    cwd: str
+    shell: str
+    path: str
+    venv: bool
+    tools: List[str]
+    versions: Dict[str, str]
+
+class Message(TypedDict, total=False):
+    """Chat message for llama.cpp API."""
+    role: str
+    content: str
+    tool_calls: List[Dict[str, Any]]
+
+class ToolCall(TypedDict, total=False):
+    """Tool call from llama.cpp response."""
+    id: str
+    type: str
+    function: Dict[str, Any]
+
+class ToolResult(TypedDict, total=False):
+    """Result from tool execution."""
+    ok: bool
+    error: str
+    path: str
+    file_count: int
+    message: str
+    git: str
+    output: List[str]
+    exit_code: int
+    result: Any
+    url: str
+    title: str
+
+class PythonElement(TypedDict):
+    """Python AST element with location info."""
+    name: str
+    type: str
+    start_line: int
+    end_line: int
+
+class LlamaResponse(TypedDict, total=False):
+    """llama.cpp chat completion response."""
+    choices: List[Dict[str, Any]]
+    usage: Dict[str, int]
+    timings: Dict[str, Any]
+
+class AutoresearchState(TypedDict, total=False):
+    """State for autoresearch optimization loop."""
+    goal: str
+    eval_path: str
+    max_iterations: int
+    current_iteration: int
+    best_score: Optional[float]
+    best_commit: Optional[str]
+    history: List[Dict[str, Any]]
+    status: str
 
 # Version and app constants
 VERSION: Final[int] = 3
@@ -176,7 +240,6 @@ SYSTEM_PROMPT: Final[str] = (
     "- Use edit_file for precise find/replace edits. Make the 'find' string as short and unique as possible.\n"
     "- Preserve original formatting, whitespace, and surrounding code style exactly.\n"
     "- If an edit's exact find text is not found, use cat/grep to find the correct text first.\n"
-    "- Preserve original formatting, whitespace, and surrounding code style exactly.\n"
     "- If an edit's exact find text is not found, read the file again and use a more precise match.\n"
     "- Only run shell commands when genuinely necessary (use cat/grep/sed for reading files).\n"
     "- After changes, call commit_changes with a short message if and only if files were actually modified.\n"
@@ -438,9 +501,9 @@ def smart_truncate(lines: List[str], keep_first: int = 1, keep_last: int = 1, ma
     skipped = len(lines) - keep_first - keep_last
     return lines[:keep_first] + [f"... {skipped} lines skipped ..."] + lines[-keep_last:]
 
-_CACHED_SYSTEM_INFO: Optional[Dict[str, Any]] = None
+_CACHED_SYSTEM_INFO: Optional[SystemInfo] = None
 
-def system_summary() -> Dict[str, Any]:
+def system_summary() -> SystemInfo:
     """Return cached system information dictionary.
 
     Gathers OS details, Python version, available tools, and tool versions.
@@ -689,7 +752,7 @@ def get_map(root: str, pattern: Optional[str] = None, include_details: bool = Tr
 
     return "\n".join(output)
 
-def _extract_python_elements(filepath: Path) -> List[Dict[str, Any]]:
+def _extract_python_elements(filepath: Path) -> List[PythonElement]:
     """Extract Python functions, classes, and methods with line numbers.
 
     Args:
@@ -701,7 +764,7 @@ def _extract_python_elements(filepath: Path) -> List[Dict[str, Any]]:
     try:
         source = filepath.read_text()
         tree = ast.parse(source)
-        elements: List[Dict[str, Any]] = []
+        elements: List[PythonElement] = []
 
         for node in ast.iter_child_nodes(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1009,8 +1072,8 @@ class LocalCode:
         """
         self.repo_root: str = run("git rev-parse --show-toplevel") or os.getcwd()
         self.pending_notes: List[str] = []
-        self.messages: List[Dict[str, Any]] = []  # Conversation history for llama.cpp
-        self.last_usage: Optional[Dict[str, Any]] = None
+        self.messages: List[Message] = []  # Conversation history for llama.cpp
+        self.last_usage: Optional[Dict[str, int]] = None
         self.total_tokens: int = 0
         self._tokens_estimated: bool = False  # True if tokens are estimated (not from API)
         self.bridge_port: int = self._get_bridge_port()
@@ -1124,7 +1187,7 @@ class LocalCode:
         thread.start()
         time.sleep(0.5)  # allow startup
 
-    def llama_request(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, slot_id: int = 0) -> Optional[Dict[str, Any]]:
+    def llama_request(self, messages: List[Message], tools: Optional[List[Dict[str, Any]]] = None, slot_id: int = 0) -> Optional[LlamaResponse]:
         """Send a chat completion request to llama.cpp server.
 
         Args:
@@ -1271,11 +1334,11 @@ class LocalCode:
 
         return "\n\n".join(parts)
 
-    def get_messages_with_system(self) -> List[Dict[str, Any]]:
+    def get_messages_with_system(self) -> List[Message]:
         """Return messages list with system prompt prepended."""
         return [{"role": "system", "content": SYSTEM_PROMPT}] + self.messages
 
-    def extract_text(self, response: Dict[str, Any]) -> str:
+    def extract_text(self, response: LlamaResponse) -> str:
         """Extract text content from OpenAI-compatible response."""
         choices = response.get("choices", [])
         if not choices:
@@ -1283,7 +1346,7 @@ class LocalCode:
         message = choices[0].get("message", {})
         return message.get("content", "") or ""
 
-    def extract_reasoning_content(self, response: Dict[str, Any]) -> str:
+    def extract_reasoning_content(self, response: LlamaResponse) -> str:
         """Extract reasoning_content from OpenAI-compatible response."""
         choices = response.get("choices", [])
         if not choices:
@@ -1291,7 +1354,7 @@ class LocalCode:
         message = choices[0].get("message", {})
         return message.get("reasoning_content", "") or ""
 
-    def extract_tool_calls(self, response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def extract_tool_calls(self, response: LlamaResponse) -> List[ToolCall]:
         """Extract tool calls from OpenAI-compatible response."""
         choices = response.get("choices", [])
         if not choices:
@@ -1299,7 +1362,7 @@ class LocalCode:
         message = choices[0].get("message", {})
         return message.get("tool_calls", []) or []
 
-    def get_finish_reason(self, response: Dict[str, Any]) -> str:
+    def get_finish_reason(self, response: LlamaResponse) -> str:
         """Get finish reason from response."""
         choices = response.get("choices", [])
         if not choices:
@@ -1312,7 +1375,7 @@ class LocalCode:
         print(render_md(text))
         print()
 
-    def tool_get_repo_map(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def tool_get_repo_map(self, args: Dict[str, Any]) -> ToolResult:
         pattern = args.get("pattern", "")
         include_details = args.get("include_details", True)
 
@@ -1329,7 +1392,7 @@ class LocalCode:
 
         return {"ok": True, "file_count": file_count}
 
-    def tool_write_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def tool_write_file(self, args: Dict[str, Any]) -> ToolResult:
         path = args["path"]
         content = args["content"]
         overwrite = args.get("overwrite", False)
@@ -1371,7 +1434,7 @@ class LocalCode:
         except (PermissionError, OSError) as e:
             return {"ok": False, "error": str(e)}
 
-    def tool_edit_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def tool_edit_file(self, args: Dict[str, Any]) -> ToolResult:
         path = args["path"]
         find = args["find"]
         replace = args["replace"]
@@ -1457,7 +1520,7 @@ class LocalCode:
         # 'dangerous', 'malicious', or 'other' - require user approval
         return (False, classification)
 
-    def tool_run_shell_command(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def tool_run_shell_command(self, args: Dict[str, Any]) -> ToolResult:
         cmd = args["command"].strip()
         if not cmd:
             return {"ok": False, "error": "empty command"}
@@ -1518,7 +1581,7 @@ class LocalCode:
         except Exception as e:
             return {"ok": False, "command": cmd, "error": str(e)}
 
-    def tool_commit_changes(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def tool_commit_changes(self, args: Dict[str, Any]) -> ToolResult:
         message = args["message"].strip()
 
         # Format modified Python files before committing
@@ -1579,7 +1642,7 @@ class LocalCode:
 
         return formatted
 
-    def tool_browser_execute(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def tool_browser_execute(self, args: Dict[str, Any]) -> ToolResult:
         code = args.get("code", "").strip()
         if not code:
             return {"ok": False, "error": "empty code"}
@@ -1606,7 +1669,7 @@ class LocalCode:
     # AutoResearch Tools
     # =========================================================================
 
-    def tool_create_eval(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def tool_create_eval(self, args: Dict[str, Any]) -> ToolResult:
         """Propose and create an eval function based on the goal."""
         goal = args.get("goal", "")
         target_file = args.get("target_file")
@@ -1622,7 +1685,7 @@ class LocalCode:
             "note": "Agent should generate eval.py code based on tool description guidelines and present it to user for approval"
         }
 
-    def tool_start_autoresearch(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def tool_start_autoresearch(self, args: Dict[str, Any]) -> ToolResult:
         """Start the autoresearch optimization loop."""
         goal = args.get("goal", "")
         max_iterations = args.get("max_iterations", 20)
@@ -1764,7 +1827,7 @@ Remember: Try different approaches if previous attempts didn't work.
         if commit:
             run(f"git tag -f autoresearch-best {commit}")
 
-    def execute_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    def execute_tool(self, name: str, args: Dict[str, Any]) -> ToolResult:
         if name == "get_repo_map":
             return self.tool_get_repo_map(args)
         if name == "write_file":
@@ -2118,8 +2181,8 @@ Remember: Try different approaches if previous attempts didn't work.
 # === Integrated Browser Bridge ===
 _bridge_lock: threading.Lock = threading.Lock()
 _bridge_pending: Optional[str] = None
-_bridge_result: Optional[Dict[str, Any]] = None
-_bridge_state: Dict[str, Any] = {"url": "", "title": "", "timestamp": 0}
+_bridge_result: Optional[ToolResult] = None
+_bridge_state: Dict[str, Union[str, int]] = {"url": "", "title": "", "timestamp": 0}
 _bridge_pending_time: float = 0.0
 
 class BridgeHandler(BaseHTTPRequestHandler):
@@ -2230,7 +2293,7 @@ class AutoResearchState:
         self.log_path = self.state_dir / "log.json"
         self.state = self._load_state()
 
-    def _load_state(self) -> Dict[str, Any]:
+    def _load_state(self) -> AutoresearchState:
         """Load state from disk or return empty."""
         if self.log_path.exists():
             try:
@@ -2266,7 +2329,7 @@ class AutoResearchState:
         }
         self.save()
 
-def _do_git_commit(repo_root: str, message: str) -> Dict[str, Any]:
+def _do_git_commit(repo_root: str, message: str) -> ToolResult:
     """Perform a git commit operation.
 
     Args:
@@ -2328,7 +2391,7 @@ def _do_git_commit(repo_root: str, message: str) -> Dict[str, Any]:
 def main() -> None:
     LocalCode().repl()
 
-def commit_changes(message: str) -> Dict[str, Any]:
+def commit_changes(message: str) -> ToolResult:
     """Standalone commit function for tool usage."""
     repo_root_raw = run("git rev-parse --show-toplevel") or os.getcwd()
     return _do_git_commit(repo_root_raw, message)
