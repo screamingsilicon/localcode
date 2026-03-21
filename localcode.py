@@ -1194,15 +1194,26 @@ class LocalCode:
 
                 spinner.stop()
 
-                # Build token info string with cache hit percentage
-                token_info = f"input tokens: {prompt_tokens:,}"
-                if prompt_tokens > 0 and tokens_cached > 0:
-                    cache_pct = (tokens_cached / prompt_tokens) * 100
-                    token_info += f" ({styled(f'{cache_pct:.0f}% cached', '32m')} | {styled(f'{tokens_cached:,} reused', '90m')})"
-                elif tokens_cached > 0:
-                    token_info += f" ({styled(f'{tokens_cached:,} cached', '32m')})"
+                # Build token info string with visual bar
+                CONTEXT_WINDOW = 90000
+                ctx_pct = (prompt_tokens / CONTEXT_WINDOW) * 100
+                cache_pct = (tokens_cached / prompt_tokens) * 100 if prompt_tokens > 0 else 0
 
-                print(f"{styled('local', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} {styled('✓', '32m')} {styled(token_info, '90m')}\n")
+                # Create visual bar (20 chars) representing context usage
+                bar_len = 20
+                filled = int((ctx_pct / 100) * bar_len)
+                filled = max(1, min(filled, bar_len)) if ctx_pct > 0 else 0
+                bar = '█' * filled + '░' * (bar_len - filled)
+
+                # Color the bar based on context usage
+                if ctx_pct < 60:
+                    bar_color = '32m'  # green
+                elif ctx_pct < 90:
+                    bar_color = '33m'  # yellow
+                else:
+                    bar_color = '31m'  # red
+
+                print(f"{styled('local', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} {styled('✓', '32m')} {styled(bar, bar_color)}  {ctx_pct:.1f}% ctx - {cache_pct:.0f}% cached\n")
                 return body
         except urllib.error.HTTPError as e:
             spinner.stop()
