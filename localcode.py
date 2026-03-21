@@ -45,6 +45,10 @@ HTTP_REQUEST_TIMEOUT: Final[int] = 600  # seconds
 TEMPERATURE: float = float(os.getenv("LLAMA_TEMPERATURE", "0.7"))
 MAX_TOKENS: int = int(os.getenv("LLAMA_MAX_TOKENS", "4096"))
 
+# Command safety check configuration
+ENABLE_COMMAND_SAFETY_CHECK: bool = os.getenv("LLAMA_COMMAND_CHECK", "true").lower() == "true"
+COMMAND_SAFETY_TIMEOUT: int = int(os.getenv("LLAMA_COMMAND_CHECK_TIMEOUT", "5"))  # seconds
+
 TOOLS: Final[List[Dict[str, Any]]] = [
     {
         "type": "function",
@@ -809,6 +813,67 @@ def is_safe_read_command(cmd: str) -> bool:
 
     return True
 
+def classify_command_with_llm(cmd: str, timeout: int = COMMAND_SAFETY_TIMEOUT) -> Optional[str]:
+    """Use LLM to classify a shell command as safe, dangerous, or malicious.
+
+    Makes a separate LLM call with a minimal prompt focused only on command safety.
+    This is independent of the main LLM context used for coding assistance.
+
+    Args:
+        cmd: Shell command to classify.
+        timeout: Request timeout in seconds.
+
+    Returns:
+        'safe', 'dangerous', 'malicious', or None if classification fails/times out.
+    """
+    if not ENABLE_COMMAND_SAFETY_CHECK:
+        return None
+
+    prompt = (
+        "You are a security classifier for shell commands. "
+        "Classify the following command as one of: SAFE, DANGEROUS, or MALICIOUS.\n"
+        "\n"
+        "Definitions:\n"
+        "- SAFE: Read-only operations that don't modify files, delete data, or affect system state.\n"
+        "  Examples: cat, grep, head, tail, ls, pwd, wc, find (without -exec), git status, etc.\n"
+        "- DANGEROUS: Commands that modify, delete, or could harm the system if misused.\n"
+        "  Examples: rm, mv, cp (overwriting), chmod, chown, sed -i, git push, package installs, etc.\n"
+        "- MALICIOUS: Commands that appear intentionally harmful, exfiltrate data, or compromise security.\n"
+        "  Examples: curl | bash from unknown sources, sending data to external servers, privilege escalation,\n"
+        "  crypto mining, backdoors, data exfiltration, etc.\n"
+        "\n"
+        "Command to classify:\n"
+        f"```bash\n{cmd}\n```\n"
+        "\n"
+        "Respond with ONLY one word: SAFE, DANGEROUS, or MALICIOUS."
+    )
+
+    try:
+        req = urllib.request.Request(
+            f"{LLAMA_HOST}/v1/chat/completions",
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": f"localcode/{VERSION}",
+            },
+            data=json.dumps({
+                "model": MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "max_tokens": 10,
+                "stream": False,
+            }).encode(),
+        )
+
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            if "choices" in body and len(body["choices"]) > 0:
+                classification = body["choices"][0]["message"]["content"].strip().upper()
+                if classification in ("SAFE", "DANGEROUS", "MALICIOUS"):
+                    return classification.lower()
+            return None
+    except (urllib.error.URLError, urllib.error.HTTPError, Exception):
+        return None
+
 def run_shell_interactive(cmd: str, stream_output: bool = True) -> Tuple[List[str], int]:
     """Run shell command interactively with live output.
 
@@ -1306,17 +1371,56 @@ class LocalCode:
         except (PermissionError, OSError) as e:
             return {"ok": False, "error": str(e)}
 
+    def _is_command_safe(self, cmd: str) -> Tuple[bool, Optional[str]]:
+        """Check if a command is safe using both rule-based and LLM classification.
+
+        Args:
+            cmd: Shell command to check.
+
+        Returns:
+            Tuple of (is_safe, classification):
+            - is_safe: True if command can auto-run, False if user approval needed.
+            - classification: LLM classification if available ('safe', 'dangerous', 'malicious'), or None.
+        """
+        # First, fast rule-based check for known safe commands
+        if is_safe_read_command(cmd):
+            return (True, 'safe')
+
+        # For non-whitelisted commands, use LLM classification
+        classification = classify_command_with_llm(cmd)
+
+        if classification is None:
+            # LLM unavailable or timed out - require user approval (safe default)
+            return (False, None)
+
+        if classification == 'safe':
+            return (True, 'safe')
+
+        # 'dangerous' or 'malicious' - require user approval
+        return (False, classification)
+
     def tool_run_shell_command(self, args: Dict[str, Any]) -> Dict[str, Any]:
         cmd = args["command"].strip()
         if not cmd:
             return {"ok": False, "error": "empty command"}
 
-        # Auto-approve safe read-only commands
-        if is_safe_read_command(cmd):
+        # Check command safety using rule-based + LLM classification
+        is_safe, classification = self._is_command_safe(cmd)
+
+        if is_safe:
             print(f"{styled(f'$ {cmd}', '90m')}")
             answer = "y"
         else:
-            print(f"{styled('[APPROVE] $ ' + cmd, '48;5;236;37m')}")
+            # Show classification reason if available
+            if classification == 'malicious':
+                print(f"{styled('[⚠ MALICIOUS DETECTED] $ ' + cmd, '48;5;196;37m')}")
+                print(styled("  This command appears intentionally harmful. Proceed with extreme caution.", '1;31m'))
+            elif classification == 'dangerous':
+                print(f"{styled('[⚠ DANGEROUS] $ ' + cmd, '48;5;208;37m')}")
+                print(styled("  This command may modify or delete data.", '1;33m'))
+            else:
+                print(f"{styled('[APPROVE] $ ' + cmd, '48;5;236;37m')}")
+
             title(f"⏳ {APP_NAME}")
             print(styled("(y/n): ", "1m"), end="")
             sys.stdout.flush()
@@ -1331,12 +1435,12 @@ class LocalCode:
 
         try:
             # For auto-approved commands, don't stream output live - only show smart-truncated version
-            stream_output = not is_safe_read_command(cmd)
+            stream_output = not is_safe
             output_lines, exit_code = run_shell_interactive(cmd, stream_output=stream_output)
 
             # For auto-approved commands, print smart-truncated output to terminal
             # but send full output to LLM
-            if is_safe_read_command(cmd):
+            if is_safe:
                 # Smart truncate: first line, line count, last line
                 terminal_output = "\n".join(smart_truncate(output_lines, keep_first=1, keep_last=1, max_line_len=80))
                 print(styled(terminal_output, "90m"))
