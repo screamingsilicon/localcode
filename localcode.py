@@ -1185,8 +1185,24 @@ class LocalCode:
                     else:
                         self.total_tokens += prompt_tokens
                     self._tokens_estimated = False  # Reset when we get real API data
+
+                # Extract cache info from timings
+                tokens_cached = 0
+                timings = body.get("timings", {})
+                if timings:
+                    tokens_cached = timings.get("cache_n", 0)
+
                 spinner.stop()
-                print(f"{styled('local', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} {styled('✓', '32m')} {styled(f'input tokens: {prompt_tokens:,}', '90m')}\n")
+
+                # Build token info string with cache hit percentage
+                token_info = f"input tokens: {prompt_tokens:,}"
+                if prompt_tokens > 0 and tokens_cached > 0:
+                    cache_pct = (tokens_cached / prompt_tokens) * 100
+                    token_info += f" ({styled(f'{cache_pct:.0f}% cached', '32m')} | {styled(f'{tokens_cached:,} reused', '90m')})"
+                elif tokens_cached > 0:
+                    token_info += f" ({styled(f'{tokens_cached:,} cached', '32m')})"
+
+                print(f"{styled('local', '48;2;80;80;200;37m')}{styled('code', '48;2;60;60;180;97m')} {styled('✓', '32m')} {styled(token_info, '90m')}\n")
                 return body
         except urllib.error.HTTPError as e:
             spinner.stop()
