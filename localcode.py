@@ -871,6 +871,8 @@ def classify_command_with_llm(cmd: str, timeout: int = COMMAND_SAFETY_TIMEOUT) -
                 "temperature": 0.1,
                 "max_tokens": 2000,
                 "stream": False,
+                "cache_prompt": True,
+                "id_slot": 1,  # Use slot 1 for safety checks (separate from main conversation)
             }).encode(),
         )
 
@@ -1122,8 +1124,14 @@ class LocalCode:
         thread.start()
         time.sleep(0.5)  # allow startup
 
-    def llama_request(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
-        """Send a chat completion request to llama.cpp server."""
+    def llama_request(self, messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None, slot_id: int = 0) -> Optional[Dict[str, Any]]:
+        """Send a chat completion request to llama.cpp server.
+
+        Args:
+            messages: List of conversation messages.
+            tools: Optional list of tool definitions.
+            slot_id: llama.cpp slot ID for cache reuse (default: 0 for main conversation, 1 for safety checks).
+        """
         # Convert tools to OpenAI format expected by llama.cpp
         openai_tools = None
         if tools:
@@ -1145,6 +1153,8 @@ class LocalCode:
             "temperature": TEMPERATURE,
             "max_tokens": MAX_TOKENS,
             "stream": False,
+            "cache_prompt": True,
+            "id_slot": slot_id,
         }
 
         if openai_tools:
@@ -1206,7 +1216,7 @@ class LocalCode:
     def build_user_message(self, request: str) -> str:
         """Build the user message content with context.
 
-        Minimal context: system summary sent once, time always included.
+        Minimal context: system summary and time sent only once for cache efficiency.
         Agent uses get_repo_map tool and shell commands (cat/grep) to read files.
         """
         now = datetime.datetime.now().astimezone()
@@ -1216,9 +1226,10 @@ class LocalCode:
 
         parts = []
 
-        # Send system summary only once
+        # Send system summary and time only once for cache efficiency
         if not self._initial_context_sent:
             parts.append(f"### System Summary\n{json.dumps(system_summary(), separators=(',', ':'))}")
+            parts.append(f"### Current Time\n{current_time}")
             self._initial_context_sent = True
 
         if self.pending_notes:
@@ -1229,7 +1240,6 @@ class LocalCode:
         if _bridge_state.get("url"):
             parts.append(f"### Browser State\nURL: {_bridge_state.get('url')}\nTitle: {_bridge_state.get('title', '')}")
 
-        parts.append(f"### Current Time\n{current_time}")
         parts.append(f"### Request\n{request}")
 
         return "\n\n".join(parts)
