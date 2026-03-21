@@ -47,7 +47,9 @@ MAX_TOKENS: int = int(os.getenv("LLAMA_MAX_TOKENS", "4096"))
 
 # Command safety check configuration
 ENABLE_COMMAND_SAFETY_CHECK: bool = os.getenv("LLAMA_COMMAND_CHECK", "true").lower() == "true"
-COMMAND_SAFETY_TIMEOUT: int = int(os.getenv("LLAMA_COMMAND_CHECK_TIMEOUT", "5"))  # seconds
+COMMAND_SAFETY_TIMEOUT: int = int(os.getenv("LLAMA_COMMAND_CHECK_TIMEOUT", "60"))  # seconds
+COMMAND_SAFETY_CACHE: Dict[str, str] = {}  # Cache command classifications
+COMMAND_SAFETY_CACHE_MAX_SIZE: int = 1000  # Max cached entries
 
 TOOLS: Final[List[Dict[str, Any]]] = [
     {
@@ -818,6 +820,7 @@ def classify_command_with_llm(cmd: str, timeout: int = COMMAND_SAFETY_TIMEOUT) -
 
     Makes a separate LLM call with a minimal prompt focused only on command safety.
     This is independent of the main LLM context used for coding assistance.
+    Results are cached to avoid repeated LLM calls for the same commands.
 
     Args:
         cmd: Shell command to classify.
@@ -828,6 +831,10 @@ def classify_command_with_llm(cmd: str, timeout: int = COMMAND_SAFETY_TIMEOUT) -
     """
     if not ENABLE_COMMAND_SAFETY_CHECK:
         return None
+
+    # Check cache first
+    if cmd in COMMAND_SAFETY_CACHE:
+        return COMMAND_SAFETY_CACHE[cmd]
 
     prompt = (
         "You are a security classifier for shell commands. "
@@ -859,7 +866,7 @@ def classify_command_with_llm(cmd: str, timeout: int = COMMAND_SAFETY_TIMEOUT) -
                 "model": MODEL,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
-                "max_tokens": 10,
+                "max_tokens": 2000,
                 "stream": False,
             }).encode(),
         )
@@ -867,8 +874,19 @@ def classify_command_with_llm(cmd: str, timeout: int = COMMAND_SAFETY_TIMEOUT) -
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = json.loads(resp.read().decode("utf-8"))
             if "choices" in body and len(body["choices"]) > 0:
-                classification = body["choices"][0]["message"]["content"].strip().upper()
+                message = body["choices"][0]["message"]
+                # Handle thinking models: content may be in 'content' field
+                # with reasoning in 'reasoning_content'
+                classification = message.get("content", "").strip().upper()
                 if classification in ("SAFE", "DANGEROUS", "MALICIOUS"):
+                    # Cache the result
+                    COMMAND_SAFETY_CACHE[cmd] = classification.lower()
+                    # Limit cache size
+                    if len(COMMAND_SAFETY_CACHE) > COMMAND_SAFETY_CACHE_MAX_SIZE:
+                        # Remove oldest entries
+                        keys_to_remove = list(COMMAND_SAFETY_CACHE.keys())[:100]
+                        for key in keys_to_remove:
+                            del COMMAND_SAFETY_CACHE[key]
                     return classification.lower()
             return None
     except (urllib.error.URLError, urllib.error.HTTPError, Exception):
