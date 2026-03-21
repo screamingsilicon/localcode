@@ -838,7 +838,8 @@ def classify_command_with_llm(cmd: str, timeout: int = COMMAND_SAFETY_TIMEOUT) -
 
     prompt = (
         "You are a security classifier for shell commands. "
-        "Classify the following command as one of: SAFE, DANGEROUS, or MALICIOUS.\n"
+        "A developer is working in a local code repository and wants to run shell commands.\n"
+        "Classify the following command as one of: SAFE, DANGEROUS, MALICIOUS, or OTHER.\n"
         "\n"
         "Definitions:\n"
         "- SAFE: Read-only operations that don't modify files, delete data, or affect system state.\n"
@@ -848,11 +849,13 @@ def classify_command_with_llm(cmd: str, timeout: int = COMMAND_SAFETY_TIMEOUT) -
         "- MALICIOUS: Commands that appear intentionally harmful, exfiltrate data, or compromise security.\n"
         "  Examples: curl | bash from unknown sources, sending data to external servers, privilege escalation,\n"
         "  crypto mining, backdoors, data exfiltration, etc.\n"
+        "- OTHER: Commands that don't clearly fit the above categories, or you are uncertain.\n"
+        "  Use this for ambiguous cases, complex pipelines, or commands you can't confidently classify.\n"
         "\n"
         "Command to classify:\n"
         f"```bash\n{cmd}\n```\n"
         "\n"
-        "Respond with ONLY one word: SAFE, DANGEROUS, or MALICIOUS."
+        "Respond with ONLY one word: SAFE, DANGEROUS, MALICIOUS, or OTHER."
     )
 
     try:
@@ -878,7 +881,7 @@ def classify_command_with_llm(cmd: str, timeout: int = COMMAND_SAFETY_TIMEOUT) -
                 # Handle thinking models: content may be in 'content' field
                 # with reasoning in 'reasoning_content'
                 classification = message.get("content", "").strip().upper()
-                if classification in ("SAFE", "DANGEROUS", "MALICIOUS"):
+                if classification in ("SAFE", "DANGEROUS", "MALICIOUS", "OTHER"):
                     # Cache the result
                     COMMAND_SAFETY_CACHE[cmd] = classification.lower()
                     # Limit cache size
@@ -1398,7 +1401,7 @@ class LocalCode:
         Returns:
             Tuple of (is_safe, classification):
             - is_safe: True if command can auto-run, False if user approval needed.
-            - classification: LLM classification if available ('safe', 'dangerous', 'malicious'), or None.
+            - classification: LLM classification if available ('safe', 'dangerous', 'malicious', 'other'), or None.
         """
         # First, fast rule-based check for known safe commands
         if is_safe_read_command(cmd):
@@ -1414,7 +1417,7 @@ class LocalCode:
         if classification == 'safe':
             return (True, 'safe')
 
-        # 'dangerous' or 'malicious' - require user approval
+        # 'dangerous', 'malicious', or 'other' - require user approval
         return (False, classification)
 
     def tool_run_shell_command(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -1436,6 +1439,9 @@ class LocalCode:
             elif classification == 'dangerous':
                 print(f"{styled('[⚠ DANGEROUS] $ ' + cmd, '48;5;208;37m')}")
                 print(styled("  This command may modify or delete data.", '1;33m'))
+            elif classification == 'other':
+                print(f"{styled('[?] UNCERTAIN $ ' + cmd, '48;5;81;37m')}")
+                print(styled("  The command safety is unclear. Please review before proceeding.", '1;36m'))
             else:
                 print(f"{styled('[APPROVE] $ ' + cmd, '48;5;236;37m')}")
 
