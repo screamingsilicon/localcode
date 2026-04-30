@@ -264,6 +264,11 @@ TOOLS: Final[List[Dict[str, Any]]] = [
 
 # AGENTS.md content (loaded at startup)
 _AGENTS_MD_CONTENT: str = ""
+_AGENTS_MD_PATH: Optional[Path] = None
+
+# CLAUDE.md content (loaded at startup)
+_CLAUDE_MD_CONTENT: str = ""
+_CLAUDE_MD_PATH: Optional[Path] = None
 
 # --- Skill discovery and parsing ---
 
@@ -372,21 +377,66 @@ def _build_skills_index(skills: List[Skill]) -> str:
     lines.append("")
     return "\n".join(lines)
 
-def _load_agents_md() -> str:
-    """Load AGENTS.md content if it exists in the current directory.
+def _load_agents_md() -> Tuple[str, Optional[Path]]:
+    """Load AGENTS.md content from project and/or user directories.
+
+    Checks in order:
+      1. Current directory (project-level)
+      2. ~/.localcode/AGENTS.md (user-level)
 
     Returns:
-        Content of AGENTS.md file or empty string if not found.
+        Tuple of (content, path) if found, or ("", None) if not found.
     """
-    try:
-        agents_md_path = Path("AGENTS.md")
-        if agents_md_path.exists():
-            return agents_md_path.read_text(encoding="utf-8").strip()
-    except Exception:
-        pass
-    return ""
+    # Project-level AGENTS.md
+    project_path = Path("AGENTS.md")
+    if project_path.exists():
+        try:
+            return project_path.read_text(encoding="utf-8").strip(), project_path
+        except Exception:
+            pass
 
-_AGENTS_MD_CONTENT = _load_agents_md()
+    # User-level AGENTS.md
+    user_path = Path.home() / ".localcode" / "AGENTS.md"
+    if user_path.exists():
+        try:
+            return user_path.read_text(encoding="utf-8").strip(), user_path
+        except Exception:
+            pass
+
+    return "", None
+
+
+def _load_claude_md() -> Tuple[str, Optional[Path]]:
+    """Load CLAUDE.md content from project and/or user directories.
+
+    Checks in order:
+      1. Current directory (project-level)
+      2. ~/.localcode/CLAUDE.md (user-level)
+
+    Returns:
+        Tuple of (content, path) if found, or ("", None) if not found.
+    """
+    # Project-level CLAUDE.md
+    project_path = Path("CLAUDE.md")
+    if project_path.exists():
+        try:
+            return project_path.read_text(encoding="utf-8").strip(), project_path
+        except Exception:
+            pass
+
+    # User-level CLAUDE.md
+    user_path = Path.home() / ".localcode" / "CLAUDE.md"
+    if user_path.exists():
+        try:
+            return user_path.read_text(encoding="utf-8").strip(), user_path
+        except Exception:
+            pass
+
+    return "", None
+
+
+_AGENTS_MD_CONTENT, _AGENTS_MD_PATH = _load_agents_md()
+_CLAUDE_MD_CONTENT, _CLAUDE_MD_PATH = _load_claude_md()
 
 SYSTEM_PROMPT: Final[str] = (
     "You are a coding expert working inside a local repository tool called 'localcode'.\n\n"
@@ -428,6 +478,8 @@ def get_system_prompt(skills: Optional[List[Skill]] = None) -> str:
     prompt = SYSTEM_PROMPT
     if _AGENTS_MD_CONTENT:
         prompt += "\n\n### AGENTS.md\n" + _AGENTS_MD_CONTENT
+    if _CLAUDE_MD_CONTENT:
+        prompt += "\n\n### CLAUDE.md\n" + _CLAUDE_MD_CONTENT
     if skills:
         prompt += "\n\n" + _build_skills_index(skills)
     return prompt
@@ -2769,6 +2821,15 @@ class LocalCode:
             source = "personal" if str(Path.home()) in str(skill.path) else "project"
             print(styled(f"    {source}: {skill.path}", "90m"))
 
+    def _announce_agents_md(self) -> None:
+        """Announce if AGENTS.md was loaded and from where."""
+        if _AGENTS_MD_PATH:
+            source = "project" if not str(Path.home()) in str(_AGENTS_MD_PATH) else "user"
+            print(styled(f"AGENTS.md loaded from {source}: {_AGENTS_MD_PATH}", "90m"))
+        if _CLAUDE_MD_PATH:
+            source = "project" if not str(Path.home()) in str(_CLAUDE_MD_PATH) else "user"
+            print(styled(f"CLAUDE.md loaded from {source}: {_CLAUDE_MD_PATH}", "90m"))
+
     def shell_user_command(self, shell_cmd: str) -> None:
         output_lines, exit_code = run_shell_interactive(shell_cmd)
         title(f"❓ {APP_NAME}")
@@ -2792,6 +2853,7 @@ class LocalCode:
         )
 
         self.cmd_skills()
+        self._announce_agents_md()
 
         while True:
             title(f"❓ {APP_NAME}")
